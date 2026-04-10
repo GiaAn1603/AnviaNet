@@ -1,4 +1,17 @@
 import torch
+from thop import profile
+
+
+@torch.no_grad()
+def get_model_complexity(model, batch_size, channels, height, width, device):
+    model.eval()
+    dummy_input = torch.randn(batch_size, channels, height, width).to(device)
+
+    flops, parameters = profile(model, (dummy_input,), verbose=False)
+    formatted_flops = f"{flops / 1e9:.2f}G"
+    formatted_parameters = f"{parameters / 1e6:.2f}M"
+
+    return formatted_flops, formatted_parameters
 
 
 class AverageMeter:
@@ -57,3 +70,26 @@ class SegmentationMetric:
         mean_intersection_over_union = intersection_over_union.mean().item()
 
         return mean_intersection_over_union
+
+    def class_intersection_over_union(self, class_id):
+        intersection_over_union = self.intersection_over_union()
+        class_intersection_over_union = intersection_over_union[class_id].item() if class_id < len(intersection_over_union) else 0.0
+
+        return class_intersection_over_union
+
+    def class_accuracy(self, class_id):
+        if self.confusion_matrix is None:
+            return 0.0
+
+        float_confusion_matrix = self.confusion_matrix.to(dtype=torch.float32)
+
+        true_positive = float_confusion_matrix[class_id, class_id]
+        false_negative = float_confusion_matrix[class_id, :].sum() - true_positive
+        false_positive = float_confusion_matrix[:, class_id].sum() - true_positive
+        true_negative = float_confusion_matrix.sum() - (true_positive + false_positive + false_negative)
+
+        sensitivity = true_positive / (true_positive + false_negative + 1e-15)
+        specificity = true_negative / (true_negative + false_positive + 1e-15)
+        accuracy = ((sensitivity + specificity) / 2).item()
+
+        return accuracy

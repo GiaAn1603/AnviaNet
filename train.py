@@ -9,6 +9,7 @@ from core.dataset import BDD100KDataset
 from core.loss import TotalLoss
 from core.model import AnviaNet
 from utils.engine import train_one_epoch, evaluate
+from utils.metrics import get_model_complexity
 
 
 def parse_arguments():
@@ -59,7 +60,8 @@ def main():
 
     best_miou = 0.0
     best_drivable_area_miou = 0.0
-    best_lane_line_miou = 0.0
+    best_lane_line_accuracy = 0.0
+    best_lane_line_iou = 0.0
 
     print("[TRAIN] Beginning training process...")
     for epoch in range(1, arguments.epochs + 1):
@@ -76,13 +78,14 @@ def main():
             max_epochs=arguments.epochs,
         )
 
-        drivable_area_miou, lane_line_miou = evaluate(model, validation_loader, device)
-        current_miou = (drivable_area_miou + lane_line_miou) / 2.0
+        drivable_area_miou, lane_line_accuracy, lane_line_iou = evaluate(model, validation_loader, device)
+        current_miou = (drivable_area_miou + lane_line_iou) / 2.0
 
         if current_miou > best_miou:
             best_miou = current_miou
             best_drivable_area_miou = drivable_area_miou
-            best_lane_line_miou = lane_line_miou
+            best_lane_line_accuracy = lane_line_accuracy
+            best_lane_line_iou = lane_line_iou
 
             save_path = os.path.join(arguments.checkpoint_directory, "best_anvianet_model.pth")
             checkpoint = {
@@ -91,7 +94,8 @@ def main():
                 "optimizer_state_dict": optimizer.state_dict(),
                 "miou": best_miou,
                 "drivable_area_miou": drivable_area_miou,
-                "lane_line_iou": lane_line_miou,
+                "lane_line_accuracy": lane_line_accuracy,
+                "lane_line_iou": lane_line_iou,
                 "average_train_loss": average_train_loss,
             }
             torch.save(checkpoint, save_path)
@@ -104,7 +108,8 @@ def main():
         "optimizer_state_dict": optimizer.state_dict(),
         "miou": best_miou,
         "drivable_area_miou": drivable_area_miou,
-        "lane_line_iou": lane_line_miou,
+        "lane_line_accuracy": lane_line_accuracy,
+        "lane_line_iou": lane_line_iou,
         "average_train_loss": average_train_loss,
     }
     torch.save(last_checkpoint, last_save_path)
@@ -114,7 +119,11 @@ def main():
     print("-" * 50)
     print(f"Best mIoU              : {best_miou:10.4f}")
     print(f"Best Drivable Area mIoU: {best_drivable_area_miou*100:10.2f}%")
-    print(f"Best Lane Line mIoU    : {best_lane_line_miou*100:10.2f}%")
+    print(f"Best Lane Line Accuracy: {best_lane_line_accuracy*100:10.2f}%")
+    print(f"Best Lane Line IoU     : {best_lane_line_iou*100:10.2f}%")
+    print("-" * 50)
+    flops, parameters = get_model_complexity(model, input_size=(1, 3, 360, 640), device=device)
+    print(f"Complexity             : FLOPs: {flops} | Parameters: {parameters}")
     print("=" * 50 + "\n")
 
 

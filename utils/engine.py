@@ -50,13 +50,15 @@ def evaluate(model, dataloader, device):
         lane_line_metric.add_batch(lane_line_predictions, lane_line_targets)
 
     drivable_area_miou = drivable_area_metric.mean_intersection_over_union()
-    lane_line_miou = lane_line_metric.mean_intersection_over_union()
+    lane_line_accuracy = lane_line_metric.class_accuracy(1)
+    lane_line_iou = lane_line_metric.class_intersection_over_union(1)
 
     print("\n" + "=" * 50)
     print(f"[EVAL] Results Summary")
     print("-" * 50)
     print(f"Drivable Area mIoU: {drivable_area_miou * 100:>10.2f}%")
-    print(f"Lane Line mIoU    : {lane_line_miou * 100:>10.2f}%")
+    print(f"Lane Line Accuracy: {lane_line_accuracy * 100:>10.2f}%")
+    print(f"Lane Line IoU     : {lane_line_iou * 100:>10.2f}%")
     print("=" * 50 + "\n")
 
-    return drivable_area_miou, lane_line_miou
+    return drivable_area_miou, lane_line_accuracy, lane_line_iou
