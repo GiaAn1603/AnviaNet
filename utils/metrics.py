@@ -1,4 +1,5 @@
 import torch
+from thop import profile
 
 
 class AverageMeter(object):
@@ -44,7 +45,38 @@ class SegmentationMetric:
 
         return iou
 
+    def class_iou(self, class_id):
+        iou_all = self.intersection_over_union()
+
+        if class_id < len(iou_all):
+            return iou_all[class_id].item()
+
+        return 0.0
+
+    def class_accuracy(self, class_id):
+        conf = self.confusion_matrix.float()
+
+        tp = conf[class_id, class_id]
+        fn = conf[class_id, :].sum() - tp
+        fp = conf[:, class_id].sum() - tp
+        tn = conf.sum() - (tp + fp + fn)
+
+        sensitivity = tp / (tp + fn + 1e-15)
+        specificity = tn / (tn + fp + 1e-15)
+
+        return ((sensitivity + specificity) / 2).item()
+
     def mean_intersection_over_union(self):
         iou = self.intersection_over_union()
 
         return iou.mean().item()
+
+
+def get_model_complexity(model, input_size=(1, 3, 360, 640), device="cpu"):
+    model.eval()
+    dummy_input = torch.randn(input_size).to(device)
+
+    with torch.no_grad():
+        flops, params = profile(model, inputs=(dummy_input,), verbose=False)
+
+    return f"{flops / 1e9:.2f}G", f"{params / 1e6:.2f}M"

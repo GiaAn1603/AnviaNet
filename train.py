@@ -7,6 +7,7 @@ from core.dataset import BDD100KDataset
 from core.model import AnviaNet
 from core.loss import TotalLoss
 from utils.engine import train_one_epoch, evaluate
+from utils.metrics import get_model_complexity
 
 
 def parse_arguments():
@@ -34,7 +35,8 @@ def main():
 
     best_mean_iou = 0.0
     best_da_miou = 0.0
-    best_ll_miou = 0.0
+    best_ll_iou = 0.0
+    best_ll_acc = 0.0
 
     print("[DATA] Loading BDD100K multi-task dataset...")
     train_loader = DataLoader(
@@ -74,13 +76,19 @@ def main():
             max_epochs=args.epochs,
         )
 
-        da_miou, ll_miou = evaluate(model=model, dataloader=val_loader, device=device)
-        current_mean_iou = (da_miou + ll_miou) / 2.0
+        da_miou, ll_acc, ll_iou = evaluate(
+            model=model,
+            dataloader=val_loader,
+            device=device,
+        )
+
+        current_mean_iou = (da_miou + ll_iou) / 2.0
 
         if current_mean_iou > best_mean_iou:
             best_mean_iou = current_mean_iou
             best_da_miou = da_miou
-            best_ll_miou = ll_miou
+            best_ll_iou = ll_iou
+            best_ll_acc = ll_acc
 
             save_path = os.path.join(args.save_dir, "best_anvianet_model.pth")
             checkpoint = {
@@ -89,7 +97,8 @@ def main():
                 "optimizer_state_dict": optimizer.state_dict(),
                 "mean_iou": best_mean_iou,
                 "da_miou": da_miou,
-                "ll_miou": ll_miou,
+                "ll_acc": ll_acc,
+                "ll_iou": ll_iou,
                 "train_loss": average_train_loss,
             }
             torch.save(checkpoint, save_path)
@@ -102,7 +111,8 @@ def main():
         "optimizer_state_dict": optimizer.state_dict(),
         "mean_iou": best_mean_iou,
         "da_miou": da_miou,
-        "ll_miou": ll_miou,
+        "ll_acc": ll_acc,
+        "ll_iou": ll_iou,
         "train_loss": average_train_loss,
     }
     torch.save(last_checkpoint, last_save_path)
@@ -112,7 +122,11 @@ def main():
     print("-" * 50)
     print(f"Peak Mean IoU: {best_mean_iou:10.4f}")
     print(f"Best DA mIoU : {best_da_miou*100:10.2f}%")
-    print(f"Best LL mIoU : {best_ll_miou*100:10.2f}%")
+    print(f"Best LL Acc  : {best_ll_acc*100:10.2f}%")
+    print(f"Best LL IoU  : {best_ll_iou*100:10.2f}%")
+    print("-" * 50)
+    flops, params = get_model_complexity(model, input_size=(1, 3, 360, 640), device=device)
+    print(f"Complexity   : FLOPs: {flops} | Params: {params}")
     print("=" * 50 + "\n")
 
 

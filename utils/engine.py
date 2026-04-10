@@ -50,13 +50,16 @@ def evaluate(model, dataloader, device):
         ll_metric.add_batch(preds_ll, targets_ll)
 
     da_miou = da_metric.mean_intersection_over_union()
-    ll_miou = ll_metric.mean_intersection_over_union()
+
+    ll_acc = ll_metric.class_accuracy(1)
+    ll_iou = ll_metric.class_iou(1)
 
     print("\n" + "=" * 50)
     print(f"[EVAL] Results Summary")
     print("-" * 50)
     print(f"Drivable Area mIoU: {da_miou * 100:>10.2f}%")
-    print(f"Lane Line mIoU    : {ll_miou * 100:>10.2f}%")
+    print(f"Lane Line Accuracy: {ll_acc * 100:>10.2f}%")
+    print(f"Lane Line IoU     : {ll_iou * 100:>10.2f}%")
     print("=" * 50 + "\n")
 
-    return da_miou, ll_miou
+    return da_miou, ll_acc, ll_iou
