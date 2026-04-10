@@ -32,21 +32,6 @@ def patch_recover(patched_tensor, bin_size):
     return feature_map
 
 
-class AvgDownsampler(nn.Module):
-    def __init__(self, num_downsamples):
-        super().__init__()
-        self.pool_layers = nn.ModuleList()
-
-        for _ in range(num_downsamples):
-            self.pool_layers.append(nn.AvgPool2d(kernel_size=3, stride=2, padding=1))
-
-    def forward(self, image):
-        for pool in self.pool_layers:
-            image = pool(image)
-
-        return image
-
-
 class GraphConvolutionNetwork(nn.Module):
     def __init__(self, num_nodes, num_channels):
         super().__init__()
@@ -105,20 +90,20 @@ class ShuffleNetEncoder(nn.Module):
         self.maxpool = backbone.maxpool
         self.stage2 = backbone.stage2
         self.bottleneck_conv = ConvBatchNormPReLU(in_channels=116, out_channels=128, kernel_size=1)
-        self.downsample_1x = AvgDownsampler(num_downsamples=1)
-        self.downsample_2x = AvgDownsampler(num_downsamples=2)
+        self.compress_skip1 = nn.Sequential(nn.Conv2d(24, 12, kernel_size=1, bias=False), nn.BatchNorm2d(12), nn.PReLU(12))
+        self.compress_skip2 = nn.Sequential(nn.Conv2d(24, 12, kernel_size=1, bias=False), nn.BatchNorm2d(12), nn.PReLU(12))
 
     def forward(self, image):
-        downsampled_1x = self.downsample_1x(image)
-        downsampled_2x = self.downsample_2x(image)
-
-        features = self.conv1(image)
-        features = self.maxpool(features)
-        stage2_features = self.stage2(features)
+        feat_half = self.conv1(image)
+        feat_quarter = self.maxpool(feat_half)
+        stage2_features = self.stage2(feat_quarter)
 
         encoder_features = self.bottleneck_conv(stage2_features)
 
-        return encoder_features, downsampled_1x, downsampled_2x
+        skip1 = self.compress_skip1(feat_half)
+        skip2 = self.compress_skip2(feat_quarter)
+
+        return encoder_features, skip1, skip2
 
 
 class ContextAwareAttentionModule(nn.Module):
@@ -225,31 +210,37 @@ class UpConvBlock(nn.Module):
         return out
 
 
+class TaskDecoder(nn.Module):
+    def __init__(self, in_channels, skip_channels=12):
+        super().__init__()
+        self.stage1 = UpConvBlock(in_channels=in_channels, out_channels=32, skip_connection_channels=skip_channels)
+        self.stage2 = UpConvBlock(in_channels=32, out_channels=8, skip_connection_channels=skip_channels)
+        self.output_head = UpConvBlock(in_channels=8, out_channels=2, is_last_layer=True)
+
+    def forward(self, latent_features, skip_half, skip_quarter):
+        out = self.stage1(latent_features, skip_quarter)
+        out = self.stage2(out, skip_half)
+        out = self.output_head(out)
+
+        return out
+
+
 class AnviaNet(nn.Module):
     def __init__(self):
         super().__init__()
         self.encoder = ShuffleNetEncoder()
         self.caam = ContextAwareAttentionModule(in_channels=128, num_classes=128, bin_size=(3, 4), norm_layer=nn.BatchNorm2d)
-        self.conv_caam = ConvBatchNormPReLU(in_channels=128, out_channels=64)
-        self.decoder_da_stage1 = UpConvBlock(in_channels=64, out_channels=32)
-        self.decoder_da_stage2 = UpConvBlock(in_channels=32, out_channels=8)
-        self.decoder_da_output = UpConvBlock(in_channels=8, out_channels=2, is_last_layer=True)
-        self.decoder_ll_stage1 = UpConvBlock(in_channels=64, out_channels=32)
-        self.decoder_ll_stage2 = UpConvBlock(in_channels=32, out_channels=8)
-        self.decoder_ll_output = UpConvBlock(in_channels=8, out_channels=2, is_last_layer=True)
+        self.bottleneck = ConvBatchNormPReLU(in_channels=128, out_channels=64)
+        self.decoder_da = TaskDecoder(in_channels=64, skip_channels=12)
+        self.decoder_ll = TaskDecoder(in_channels=64, skip_channels=12)
 
     def forward(self, image):
-        encoder_features, downsampled_1x, downsampled_2x = self.encoder(image)
+        encoder_features, skip_half, skip_quarter = self.encoder(image)
 
         caam_features = self.caam(encoder_features)
-        caam_features = self.conv_caam(caam_features)
+        latent_features = self.bottleneck(caam_features)
 
-        out_da = self.decoder_da_stage1(feature_map=caam_features, skip_features=downsampled_2x)
-        out_da = self.decoder_da_stage2(feature_map=out_da, skip_features=downsampled_1x)
-        out_da = self.decoder_da_output(feature_map=out_da)
-
-        out_ll = self.decoder_ll_stage1(feature_map=caam_features, skip_features=downsampled_2x)
-        out_ll = self.decoder_ll_stage2(feature_map=out_ll, skip_features=downsampled_1x)
-        out_ll = self.decoder_ll_output(feature_map=out_ll)
+        out_da = self.decoder_da(latent_features, skip_half, skip_quarter)
+        out_ll = self.decoder_ll(latent_features, skip_half, skip_quarter)
 
         return out_da, out_ll
