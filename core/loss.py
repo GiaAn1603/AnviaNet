@@ -284,7 +284,11 @@ class SingleLoss(nn.Module):
         focal_loss = self.focal(outputs, targets)
         total_loss = focal_loss + tversky_loss
 
-        return total_loss, focal_loss.item(), tversky_loss.item()
+        return {
+            "total": total_loss,
+            "focal": focal_loss,
+            "tversky": tversky_loss,
+        }
 
 
 class TotalLoss(nn.Module):
@@ -338,4 +342,8 @@ class TotalLoss(nn.Module):
         focal_loss = loss_focal_da + loss_focal_ll
         total_loss = focal_loss + tversky_loss
 
-        return total_loss, focal_loss.item(), tversky_loss.item()
+        return {
+            "total": total_loss,
+            "focal": focal_loss,
+            "tversky": tversky_loss,
+        }
