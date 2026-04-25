@@ -27,7 +27,9 @@ def parse_arguments():
     optimization_group.add_argument("--learning_rate", type=float, default=5e-4, help="Learning rate")
     optimization_group.add_argument("--weight_decay", type=float, default=5e-4, help="Weight decay")
 
-    return parser.parse_args()
+    arguments, _ = parser.parse_known_args()
+
+    return arguments
 
 
 def main():
