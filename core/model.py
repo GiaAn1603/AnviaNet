@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torchvision.models import shufflenet_v2_x1_0, ShuffleNet_V2_X1_0_Weights
+from core.config import AnviaNetConfig
 
 
 def patch_split(feature_map, bin_size):
@@ -83,13 +84,13 @@ class UpSimpleBlock(nn.Module):
 
 
 class ShuffleNetEncoder(nn.Module):
-    def __init__(self):
+    def __init__(self, config: AnviaNetConfig):
         super().__init__()
         backbone = shufflenet_v2_x1_0(weights=ShuffleNet_V2_X1_0_Weights.DEFAULT)
         self.conv1 = backbone.conv1
         self.maxpool = backbone.maxpool
         self.stage2 = backbone.stage2
-        self.bottleneck_conv = ConvBatchNormPReLU(in_channels=116, out_channels=128, kernel_size=1)
+        self.bottleneck_conv = ConvBatchNormPReLU(in_channels=config.encoder_in_channels, out_channels=config.encoder_out_channels, kernel_size=1)
         self.compress_skip1 = nn.Sequential(nn.Conv2d(24, 12, kernel_size=1, bias=False), nn.BatchNorm2d(12), nn.PReLU(12))
         self.compress_skip2 = nn.Sequential(nn.Conv2d(24, 12, kernel_size=1, bias=False), nn.BatchNorm2d(12), nn.PReLU(12))
 
@@ -226,13 +227,25 @@ class TaskDecoder(nn.Module):
 
 
 class AnviaNet(nn.Module):
-    def __init__(self):
+    def __init__(self, config: AnviaNetConfig = None):
         super().__init__()
-        self.encoder = ShuffleNetEncoder()
-        self.caam = ContextAwareAttentionModule(in_channels=128, num_classes=128, bin_size=(3, 4), norm_layer=nn.BatchNorm2d)
-        self.bottleneck = ConvBatchNormPReLU(in_channels=128, out_channels=64)
-        self.decoder_da = TaskDecoder(in_channels=64, skip_channels=12)
-        self.decoder_ll = TaskDecoder(in_channels=64, skip_channels=12)
+
+        if config is None:
+            config = AnviaNetConfig()
+
+        self.encoder = ShuffleNetEncoder(config=config)
+
+        self.caam = ContextAwareAttentionModule(
+            in_channels=config.caam_in_channels,
+            num_classes=config.caam_num_classes,
+            bin_size=config.caam_bin_size,
+            norm_layer=nn.BatchNorm2d,
+        )
+
+        self.bottleneck = ConvBatchNormPReLU(in_channels=config.bottleneck_in_channels, out_channels=config.bottleneck_out_channels)
+
+        self.decoder_da = TaskDecoder(in_channels=config.decoder_in_channels, skip_channels=config.decoder_skip_channels)
+        self.decoder_ll = TaskDecoder(in_channels=config.decoder_in_channels, skip_channels=config.decoder_skip_channels)
 
     def forward(self, image):
         encoder_features, skip_half, skip_quarter = self.encoder(image)

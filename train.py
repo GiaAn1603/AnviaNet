@@ -7,6 +7,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 from core.dataset import BDD100KDataset
 from core.model import AnviaNet
 from core.loss import TotalLoss
+from core.config import AnviaNetConfig
 from utils.engine import train_one_epoch, evaluate
 from utils.metrics import get_model_complexity
 
@@ -18,6 +19,12 @@ def parse_arguments():
     data_group.add_argument("--data_root", type=str, required=True, help="Path to BDD100K dataset")
     data_group.add_argument("--save_dir", type=str, default="./checkpoints", help="Directory to save checkpoints")
     data_group.add_argument("--num_workers", type=int, default=4, help="Data loader workers")
+
+    model_group = parser.add_argument_group("Model Configuration")
+    model_group.add_argument("--img_height", type=int, default=360, help="Target image height")
+    model_group.add_argument("--img_width", type=int, default=640, help="Target image width")
+    model_group.add_argument("--num_classes", type=int, default=2, help="Segmentation classes")
+    model_group.add_argument("--lane_class_id", type=int, default=1, help="Class ID for lanes")
 
     opt_group = parser.add_argument_group("Optimization Strategy")
     opt_group.add_argument("--epochs", type=int, default=50, help="Total epochs")
@@ -43,7 +50,7 @@ def main():
 
     print("[DATA] Loading BDD100K multi-task dataset...")
     train_loader = DataLoader(
-        dataset=BDD100KDataset(data_root=args.data_root, is_train=True),
+        dataset=BDD100KDataset(data_root=args.data_root, is_train=True, img_size=(args.img_height, args.img_width)),
         batch_size=args.batch_size,
         shuffle=True,
         num_workers=args.num_workers,
@@ -51,7 +58,7 @@ def main():
         drop_last=True,
     )
     val_loader = DataLoader(
-        dataset=BDD100KDataset(data_root=args.data_root, is_train=False),
+        dataset=BDD100KDataset(data_root=args.data_root, is_train=False, img_size=(args.img_height, args.img_width)),
         batch_size=args.batch_size,
         shuffle=False,
         num_workers=args.num_workers,
@@ -59,8 +66,9 @@ def main():
     )
 
     print("[MODEL] Assembling AnviaNet architecture...")
-    model = AnviaNet().to(device)
-    criterion = TotalLoss()
+    config = AnviaNetConfig(img_height=args.img_height, img_width=args.img_width, num_classes=args.num_classes, lane_class_id=args.lane_class_id)
+    model = AnviaNet(config=config).to(device)
+    criterion = TotalLoss(config=config.loss)
     optimizer = AdamW(params=model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
     scheduler = CosineAnnealingLR(optimizer=optimizer, T_max=args.epochs, eta_min=1e-6)
     scaler = torch.amp.GradScaler("cuda", enabled=device.type == "cuda")
@@ -85,6 +93,8 @@ def main():
             model=model,
             dataloader=val_loader,
             device=device,
+            num_classes=args.num_classes,
+            lane_class_id=args.lane_class_id,
         )
 
         current_mean_iou = (da_miou + ll_iou) / 2.0
@@ -130,7 +140,7 @@ def main():
     print(f"Best LL Acc  : {best_ll_acc*100:10.2f}%")
     print(f"Best LL IoU  : {best_ll_iou*100:10.2f}%")
     print("-" * 50)
-    flops, params = get_model_complexity(model, input_size=(1, 3, 360, 640), device=device)
+    flops, params = get_model_complexity(model, input_size=(1, 3, args.img_height, args.img_width), device=device)
     print(f"Complexity   : FLOPs: {flops} | Params: {params}")
     print("=" * 50 + "\n")
 

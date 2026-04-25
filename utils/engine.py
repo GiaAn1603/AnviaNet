@@ -34,10 +34,10 @@ def train_one_epoch(model, dataloader, optimizer, criterion, scaler, device, epo
 
 
 @torch.no_grad()
-def evaluate(model, dataloader, device):
+def evaluate(model, dataloader, device, num_classes=2, lane_class_id=1):
     model.eval()
-    da_metric = SegmentationMetric(num_classes=2)
-    ll_metric = SegmentationMetric(num_classes=2)
+    da_metric = SegmentationMetric(num_classes=num_classes)
+    ll_metric = SegmentationMetric(num_classes=num_classes)
     pbar = tqdm(dataloader, total=len(dataloader), desc="Evaluating")
 
     for images, targets_da, targets_ll in pbar:
@@ -55,8 +55,8 @@ def evaluate(model, dataloader, device):
 
     da_miou = da_metric.mean_intersection_over_union()
 
-    ll_acc = ll_metric.class_accuracy(1)
-    ll_iou = ll_metric.class_iou(1)
+    ll_acc = ll_metric.class_accuracy(lane_class_id)
+    ll_iou = ll_metric.class_iou(lane_class_id)
 
     print("\n" + "=" * 50)
     print(f"[EVAL] Results Summary")

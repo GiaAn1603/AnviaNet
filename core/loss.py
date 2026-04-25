@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.modules.loss import _Loss
+from core.config import LossConfig
 
 BINARY_MODE = "binary"
 MULTICLASS_MODE = "multiclass"
@@ -241,22 +242,17 @@ class TverskyLoss(DiceLoss):
 
 
 class SingleLoss(nn.Module):
-    def __init__(self, hyperparams=None, task=None):
+    def __init__(self, config: LossConfig = None, task=None):
         super().__init__()
 
-        if hyperparams is None:
-            hyperparams = {
-                "alpha1": 0.5,
-                "gamma1": 1.0,
-                "alpha2": 0.5,
-                "gamma2": 1.0,
-                "alpha3": 0.25,
-                "gamma3": 2.0,
-            }
+        if config is None:
+            config = LossConfig()
 
-        tversky_da_alpha, tversky_da_gamma = (hyperparams["alpha1"], hyperparams["gamma1"])
-        tversky_ll_alpha, tversky_ll_gamma = (hyperparams["alpha2"], hyperparams["gamma2"])
-        focal_alpha, focal_gamma = hyperparams["alpha3"], hyperparams["gamma3"]
+        self.config = config
+
+        tversky_da_alpha, tversky_da_gamma = (config.tversky_da_alpha, config.tversky_da_gamma)
+        tversky_ll_alpha, tversky_ll_gamma = (config.tversky_ll_alpha, config.tversky_ll_gamma)
+        focal_alpha, focal_gamma = config.focal_alpha, config.focal_gamma
 
         if task == "DA":
             self.tver = TverskyLoss(
@@ -292,22 +288,17 @@ class SingleLoss(nn.Module):
 
 
 class TotalLoss(nn.Module):
-    def __init__(self, hyperparams=None):
+    def __init__(self, config: LossConfig = None):
         super().__init__()
 
-        if hyperparams is None:
-            hyperparams = {
-                "alpha1": 0.5,
-                "gamma1": 1.0,
-                "alpha2": 0.5,
-                "gamma2": 1.0,
-                "alpha3": 0.25,
-                "gamma3": 2.0,
-            }
+        if config is None:
+            config = LossConfig()
 
-        tversky_da_alpha, tversky_da_gamma = (hyperparams["alpha1"], hyperparams["gamma1"])
-        tversky_ll_alpha, tversky_ll_gamma = (hyperparams["alpha2"], hyperparams["gamma2"])
-        focal_alpha, focal_gamma = hyperparams["alpha3"], hyperparams["gamma3"]
+        self.config = config
+
+        tversky_da_alpha, tversky_da_gamma = (config.tversky_da_alpha, config.tversky_da_gamma)
+        tversky_ll_alpha, tversky_ll_gamma = (config.tversky_ll_alpha, config.tversky_ll_gamma)
+        focal_alpha, focal_gamma = config.focal_alpha, config.focal_gamma
 
         self.tver_da = TverskyLoss(
             mode=MULTICLASS_MODE,
