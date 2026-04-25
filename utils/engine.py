@@ -4,7 +4,7 @@ from tqdm import tqdm
 from utils.metrics import AverageMeter, SegmentationMetric
 
 
-def train_one_epoch(model, dataloader, criterion, optimizer, scaler, device, epoch, max_epochs):
+def train_one_epoch(model, dataloader, criterion, optimizer, scaler, device, epoch, max_epochs, scheduler=None):
     model.train()
     loss_meter = AverageMeter()
     progress_bar = tqdm(dataloader, total=len(dataloader), bar_format="{l_bar}{bar:10}{r_bar}")
@@ -26,6 +26,9 @@ def train_one_epoch(model, dataloader, criterion, optimizer, scaler, device, epo
 
         loss_meter.update(loss.item(), images.size(dim=0))
         progress_bar.set_description(f"Epoch [{epoch}/{max_epochs}] | Total Loss: {loss_meter.average:.4f} | Learning Rate: {optimizer.param_groups[0]['lr']:.6f}")
+
+    if scheduler:
+        scheduler.step()
 
     return loss_meter.average
 

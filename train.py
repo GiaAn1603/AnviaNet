@@ -3,6 +3,7 @@ import os
 
 import torch
 from torch.optim import AdamW
+from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader
 
 from core.dataset import BDD100KDataset
@@ -56,6 +57,7 @@ def main():
     model = AnviaNet().to(device)
     criterion = TotalLoss()
     optimizer = AdamW(model.parameters(), lr=arguments.learning_rate, weight_decay=arguments.weight_decay)
+    scheduler = CosineAnnealingLR(optimizer, T_max=arguments.epochs, eta_min=1e-6)
     scaler = torch.amp.GradScaler(device="cuda", enabled=device.type == "cuda")
 
     best_miou = 0.0
@@ -76,6 +78,7 @@ def main():
             device,
             epoch=epoch,
             max_epochs=arguments.epochs,
+            scheduler=scheduler,
         )
 
         drivable_area_miou, lane_line_accuracy, lane_line_iou = evaluate(model, validation_loader, device)
@@ -92,6 +95,7 @@ def main():
                 "epoch": epoch,
                 "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
+                "scheduler_state_dict": scheduler.state_dict(),
                 "miou": best_miou,
                 "drivable_area_miou": drivable_area_miou,
                 "lane_line_accuracy": lane_line_accuracy,
@@ -106,6 +110,7 @@ def main():
         "epoch": epoch,
         "model_state_dict": model.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
+        "scheduler_state_dict": scheduler.state_dict(),
         "miou": best_miou,
         "drivable_area_miou": drivable_area_miou,
         "lane_line_accuracy": lane_line_accuracy,
