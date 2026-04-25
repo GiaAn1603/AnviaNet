@@ -18,7 +18,8 @@ def train_one_epoch(model, dataloader, criterion, optimizer, scaler, device, epo
 
         with torch.autocast(device_type=device.type, enabled=device.type == "cuda"):
             predictions = model(images)
-            loss, _, _ = criterion(predictions, drivable_area_targets, lane_line_targets)
+            loss_dict = criterion(predictions, drivable_area_targets, lane_line_targets)
+            loss = loss_dict["total"]
 
         scaler.scale(loss).backward()
         scaler.step(optimizer)

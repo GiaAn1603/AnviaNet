@@ -134,4 +134,8 @@ class TotalLoss(nn.Module):
 
         total_loss = tversky_loss + focal_loss
 
-        return total_loss, tversky_loss.item(), focal_loss.item()
+        return {
+            "total": total_loss,
+            "tversky_loss": tversky_loss,
+            "focal_loss": focal_loss,
+        }
