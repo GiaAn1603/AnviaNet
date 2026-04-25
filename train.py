@@ -25,6 +25,7 @@ def parse_arguments():
     model_group = parser.add_argument_group("Model Configuration")
     model_group.add_argument("--image_height", type=int, default=360, help="Target image height")
     model_group.add_argument("--image_width", type=int, default=640, help="Target image width")
+    model_group.add_argument("--resume", type=str, default="", help="Resume from checkpoint")
 
     optimization_group = parser.add_argument_group("Optimization Strategy")
     optimization_group.add_argument("--epochs", type=int, default=100, help="Total epochs")
@@ -68,13 +69,31 @@ def main():
     scheduler = CosineAnnealingLR(optimizer, T_max=arguments.epochs, eta_min=1e-6)
     scaler = torch.amp.GradScaler(device="cuda", enabled=device.type == "cuda")
 
+    start_epoch = 1
     best_miou = 0.0
     best_drivable_area_miou = 0.0
     best_lane_line_accuracy = 0.0
     best_lane_line_iou = 0.0
 
+    if arguments.resume and os.path.exists(arguments.resume):
+        print(f"[RESUME] Loading: {arguments.resume}")
+        checkpoint = torch.load(arguments.resume, map_location=device)
+        model.load_state_dict(checkpoint["model_state_dict"])
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+
+        start_epoch = checkpoint.get("epoch", 0) + 1
+        best_miou = checkpoint.get("miou", 0.0)
+        best_drivable_area_miou = checkpoint.get("drivable_area_miou", 0.0)
+        best_lane_line_accuracy = checkpoint.get("lane_line_accuracy", 0.0)
+        best_lane_line_iou = checkpoint.get("lane_line_iou", 0.0)
+
+        print(f"[RESUME] Resumed from Epoch {start_epoch} (Best mIoU: {best_miou:.4f} | Learning Rate: {optimizer.param_groups[0]['lr']:.6f})")
+    elif arguments.resume:
+        print("[WARN] Checkpoint not found. Starting from scratch.")
+
     print("[TRAIN] Beginning training process...")
-    for epoch in range(1, arguments.epochs + 1):
+    for epoch in range(start_epoch, arguments.epochs + 1):
         print(f"\n--- Epoch [{epoch}/{arguments.epochs}] ---")
 
         average_train_loss = train_one_epoch(
@@ -113,19 +132,19 @@ def main():
             torch.save(checkpoint, save_path)
             print(f"[SAVE] Best mIoU: {best_miou:.4f} -> {save_path}")
 
-    last_save_path = os.path.join(arguments.checkpoint_directory, "last_anvianet_model.pth")
-    last_checkpoint = {
-        "epoch": epoch,
-        "model_state_dict": model.state_dict(),
-        "optimizer_state_dict": optimizer.state_dict(),
-        "scheduler_state_dict": scheduler.state_dict(),
-        "miou": best_miou,
-        "drivable_area_miou": drivable_area_miou,
-        "lane_line_accuracy": lane_line_accuracy,
-        "lane_line_iou": lane_line_iou,
-        "average_train_loss": average_train_loss,
-    }
-    torch.save(last_checkpoint, last_save_path)
+        last_save_path = os.path.join(arguments.checkpoint_directory, "last_anvianet_model.pth")
+        last_checkpoint = {
+            "epoch": epoch,
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "scheduler_state_dict": scheduler.state_dict(),
+            "miou": best_miou,
+            "drivable_area_miou": drivable_area_miou,
+            "lane_line_accuracy": lane_line_accuracy,
+            "lane_line_iou": lane_line_iou,
+            "average_train_loss": average_train_loss,
+        }
+        torch.save(last_checkpoint, last_save_path)
 
     print("\n" + "=" * 50)
     print(f"{'TRAINING COMPLETED':^50}")
