@@ -3,6 +3,7 @@ import argparse
 import torch
 from torch.utils.data import DataLoader
 from torch.optim import AdamW
+from torch.optim.lr_scheduler import CosineAnnealingLR
 from core.dataset import BDD100KDataset
 from core.model import AnviaNet
 from core.loss import TotalLoss
@@ -59,6 +60,7 @@ def main():
     model = AnviaNet().to(device)
     criterion = TotalLoss()
     optimizer = AdamW(params=model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
+    scheduler = CosineAnnealingLR(optimizer=optimizer, T_max=args.epochs, eta_min=1e-6)
     scaler = torch.amp.GradScaler("cuda", enabled=device.type == "cuda")
 
     print("[TRAIN] Beginning training process...")
@@ -74,6 +76,7 @@ def main():
             device=device,
             epoch=epoch,
             max_epochs=args.epochs,
+            scheduler=scheduler,
         )
 
         da_miou, ll_acc, ll_iou = evaluate(
