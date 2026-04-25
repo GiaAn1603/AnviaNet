@@ -35,10 +35,10 @@ def train_one_epoch(model, dataloader, criterion, optimizer, scaler, device, epo
 
 
 @torch.no_grad()
-def evaluate(model, dataloader, device):
+def evaluate(model, dataloader, device, class_count, lane_line_class_id):
     model.eval()
-    drivable_area_metric = SegmentationMetric(class_count=2)
-    lane_line_metric = SegmentationMetric(class_count=2)
+    drivable_area_metric = SegmentationMetric(class_count=class_count)
+    lane_line_metric = SegmentationMetric(class_count=class_count)
     progress_bar = tqdm(dataloader, total=len(dataloader), desc="Evaluating")
 
     for images, drivable_area_targets, lane_line_targets in progress_bar:
@@ -54,8 +54,8 @@ def evaluate(model, dataloader, device):
         lane_line_metric.add_batch(lane_line_predictions, lane_line_targets)
 
     drivable_area_miou = drivable_area_metric.mean_intersection_over_union()
-    lane_line_accuracy = lane_line_metric.class_accuracy(1)
-    lane_line_iou = lane_line_metric.class_intersection_over_union(1)
+    lane_line_accuracy = lane_line_metric.class_accuracy(lane_line_class_id)
+    lane_line_iou = lane_line_metric.class_intersection_over_union(lane_line_class_id)
 
     print("\n" + "=" * 50)
     print(f"[EVAL] Results Summary")

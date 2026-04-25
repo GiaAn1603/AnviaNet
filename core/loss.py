@@ -96,21 +96,12 @@ class FocalLoss(_Loss):
 
 
 class TotalLoss(nn.Module):
-    def __init__(self):
+    def __init__(self, config):
         super().__init__()
 
-        hyperparams = {
-            "drivable_area_tversky_alpha": 0.5,
-            "drivable_area_tversky_gamma": 1.0,
-            "lane_line_tversky_alpha": 0.5,
-            "lane_line_tversky_gamma": 1.0,
-            "focal_alpha": 0.25,
-            "focal_gamma": 2.0,
-        }
-
-        drivable_area_tversky_alpha, drivable_area_tversky_gamma = hyperparams["drivable_area_tversky_alpha"], hyperparams["drivable_area_tversky_gamma"]
-        lane_line_tversky_alpha, lane_line_tversky_gamma = hyperparams["lane_line_tversky_alpha"], hyperparams["lane_line_tversky_gamma"]
-        focal_alpha, focal_gamma = hyperparams["focal_alpha"], hyperparams["focal_gamma"]
+        drivable_area_tversky_alpha, drivable_area_tversky_gamma = config.drivable_area_tversky_alpha, config.drivable_area_tversky_gamma
+        lane_line_tversky_alpha, lane_line_tversky_gamma = config.lane_line_tversky_alpha, config.lane_line_tversky_gamma
+        focal_alpha, focal_gamma = config.focal_alpha, config.focal_gamma
 
         self.drivable_area_tversky_loss = TverskyLoss(mode=MULTICLASS_MODE, alpha=drivable_area_tversky_alpha, beta=1.0 - drivable_area_tversky_alpha, gamma=drivable_area_tversky_gamma)
         self.lane_line_tversky_loss = TverskyLoss(mode=MULTICLASS_MODE, alpha=lane_line_tversky_alpha, beta=1.0 - lane_line_tversky_alpha, gamma=lane_line_tversky_gamma)
