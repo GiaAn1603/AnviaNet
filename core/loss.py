@@ -58,11 +58,12 @@ class TverskyLoss(_Loss):
 
 
 class FocalLoss(_Loss):
-    def __init__(self, mode, alpha, gamma):
+    def __init__(self, mode, alpha, gamma, ohem_ratio):
         super().__init__()
         self.mode = mode
         self.alpha = alpha
         self.gamma = gamma
+        self.ohem_ratio = ohem_ratio
 
     def _compute_loss(self, predictions, targets):
         targets = targets.to(dtype=predictions.dtype)
@@ -72,6 +73,11 @@ class FocalLoss(_Loss):
         focal_term = (1.0 - probabilities).pow(self.gamma)
         losses = focal_term * log_probabilities
         losses *= self.alpha * targets + (1.0 - self.alpha) * (1.0 - targets)
+
+        if self.ohem_ratio < 1.0:
+            flattened_losses = losses.view(-1)
+            keep_count = int(self.ohem_ratio * flattened_losses.numel())
+            losses = flattened_losses.topk(k=keep_count)[0] if keep_count > 0 else losses
 
         loss = losses.mean()
 
@@ -106,8 +112,8 @@ class TotalLoss(nn.Module):
         self.drivable_area_tversky_loss = TverskyLoss(mode=MULTICLASS_MODE, alpha=drivable_area_tversky_alpha, beta=1.0 - drivable_area_tversky_alpha, gamma=drivable_area_tversky_gamma)
         self.lane_line_tversky_loss = TverskyLoss(mode=MULTICLASS_MODE, alpha=lane_line_tversky_alpha, beta=1.0 - lane_line_tversky_alpha, gamma=lane_line_tversky_gamma)
 
-        self.drivable_area_focal_loss = FocalLoss(mode=MULTICLASS_MODE, alpha=focal_alpha, gamma=focal_gamma)
-        self.lane_line_focal_loss = FocalLoss(mode=MULTICLASS_MODE, alpha=focal_alpha, gamma=focal_gamma)
+        self.drivable_area_focal_loss = FocalLoss(mode=MULTICLASS_MODE, alpha=focal_alpha, gamma=focal_gamma, ohem_ratio=config.drivable_area_ohem_ratio)
+        self.lane_line_focal_loss = FocalLoss(mode=MULTICLASS_MODE, alpha=focal_alpha, gamma=focal_gamma, ohem_ratio=config.lane_line_ohem_ratio)
 
     def forward(self, predictions, drivable_area_targets, lane_line_targets):
         drivable_area_targets = drivable_area_targets.to(dtype=torch.int64)
