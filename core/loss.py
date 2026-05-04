@@ -9,12 +9,13 @@ MULTILABEL_MODE = "multilabel"
 
 
 class TverskyLoss(_Loss):
-    def __init__(self, mode, alpha, beta, gamma):
+    def __init__(self, mode, alpha, beta, gamma, classes=None):
         super().__init__()
         self.mode = mode
         self.alpha = alpha
         self.beta = beta
         self.gamma = gamma
+        self.classes = classes
 
     def _compute_score(self, predictions, targets, reduction_dimensions):
         intersection = torch.sum(predictions * targets, dim=reduction_dimensions)
@@ -52,6 +53,7 @@ class TverskyLoss(_Loss):
         mask = targets.sum(dim=reduction_dimensions) > 0
         losses *= mask.to(dtype=losses.dtype)
 
+        losses = losses[self.classes] if self.classes is not None else losses
         tversky_loss = losses.mean() ** self.gamma
 
         return tversky_loss
@@ -110,7 +112,7 @@ class TotalLoss(nn.Module):
         focal_alpha, focal_gamma = config.focal_alpha, config.focal_gamma
 
         self.drivable_area_tversky_loss = TverskyLoss(mode=MULTICLASS_MODE, alpha=drivable_area_tversky_alpha, beta=1.0 - drivable_area_tversky_alpha, gamma=drivable_area_tversky_gamma)
-        self.lane_line_tversky_loss = TverskyLoss(mode=MULTICLASS_MODE, alpha=lane_line_tversky_alpha, beta=1.0 - lane_line_tversky_alpha, gamma=lane_line_tversky_gamma)
+        self.lane_line_tversky_loss = TverskyLoss(mode=MULTICLASS_MODE, alpha=lane_line_tversky_alpha, beta=1.0 - lane_line_tversky_alpha, gamma=lane_line_tversky_gamma, classes=[config.lane_line_class_id])
 
         self.drivable_area_focal_loss = FocalLoss(mode=MULTICLASS_MODE, alpha=focal_alpha, gamma=focal_gamma, ohem_ratio=config.drivable_area_ohem_ratio)
         self.lane_line_focal_loss = FocalLoss(mode=MULTICLASS_MODE, alpha=focal_alpha, gamma=focal_gamma, ohem_ratio=config.lane_line_ohem_ratio)
