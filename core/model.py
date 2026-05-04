@@ -121,14 +121,12 @@ class ShuffleNetEncoder(nn.Module):
     def _add_coords(self, x):
         batch_size, _, h, w = x.size()
 
-        xx_ones = torch.ones([batch_size, 1, 1, w], dtype=torch.float32, device=x.device)
         xx_range = torch.arange(h, dtype=torch.float32, device=x.device).view([1, 1, h, 1])
-        xx_channel = torch.matmul(xx_range, xx_ones)
+        xx_channel = xx_range.expand(batch_size, 1, h, w)
         xx_channel = xx_channel / (h - 1) * 2 - 1
 
-        yy_ones = torch.ones([batch_size, 1, h, 1], dtype=torch.float32, device=x.device)
         yy_range = torch.arange(w, dtype=torch.float32, device=x.device).view([1, 1, 1, w])
-        yy_channel = torch.matmul(yy_ones, yy_range)
+        yy_channel = yy_range.expand(batch_size, 1, h, w)
         yy_channel = yy_channel / (w - 1) * 2 - 1
 
         xx_channel = xx_channel.to(x.dtype)
