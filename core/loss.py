@@ -283,6 +283,7 @@ class SingleLoss(nn.Module):
         if task == "LL":
             self.tver = TverskyLoss(
                 mode=MULTICLASS_MODE,
+                classes=[1],
                 alpha=tversky_ll_alpha,
                 beta=1.0 - tversky_ll_alpha,
                 gamma=tversky_ll_gamma,
@@ -330,6 +331,7 @@ class TotalLoss(nn.Module):
         )
         self.tver_ll = TverskyLoss(
             mode=MULTICLASS_MODE,
+            classes=[1],
             alpha=tversky_ll_alpha,
             beta=1.0 - tversky_ll_alpha,
             gamma=tversky_ll_gamma,

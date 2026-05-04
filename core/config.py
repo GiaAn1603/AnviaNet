@@ -4,10 +4,10 @@ from typing import Tuple
 
 @dataclass
 class LossConfig:
-    tversky_da_alpha: float = 0.5
-    tversky_da_gamma: float = 1.0
-    tversky_ll_alpha: float = 0.5
-    tversky_ll_gamma: float = 1.0
+    tversky_da_alpha: float = 0.7
+    tversky_da_gamma: float = 1.33333333333
+    tversky_ll_alpha: float = 0.9
+    tversky_ll_gamma: float = 1.33333333333
     focal_alpha: float = 0.25
     focal_gamma: float = 2.0
     ohem_ratio_da: float = 0.7
