@@ -83,19 +83,62 @@ class UpSimpleBlock(nn.Module):
         return out
 
 
+class SpatialAttention(nn.Module):
+    def __init__(self, kernel_size=7):
+        super().__init__()
+        self.conv = nn.Conv2d(2, 1, kernel_size, padding=kernel_size // 2, bias=False)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, feature_map):
+        avg_out = torch.mean(feature_map, dim=1, keepdim=True)
+        max_out, _ = torch.max(feature_map, dim=1, keepdim=True)
+
+        spatial_descriptors = torch.cat([avg_out, max_out], dim=1)
+        attention_map = self.conv(spatial_descriptors)
+
+        out = feature_map * self.sigmoid(attention_map)
+
+        return out
+
+
 class ShuffleNetEncoder(nn.Module):
     def __init__(self, config: AnviaNetConfig):
         super().__init__()
         backbone = shufflenet_v2_x1_0(weights=ShuffleNet_V2_X1_0_Weights.DEFAULT)
-        self.conv1 = backbone.conv1
+        self.conv1 = nn.Sequential(nn.Conv2d(5, 24, kernel_size=3, stride=2, padding=1, bias=False), nn.BatchNorm2d(24), nn.ReLU(inplace=True))
+
+        with torch.no_grad():
+            self.conv1[0].weight[:, :3, :, :] = backbone.conv1[0].weight
+            self.conv1[0].weight[:, 3:, :, :].fill_(0.0)
+            self.conv1[1].load_state_dict(backbone.conv1[1].state_dict())
+
         self.maxpool = backbone.maxpool
         self.stage2 = backbone.stage2
         self.bottleneck_conv = ConvBatchNormPReLU(in_channels=config.encoder_in_channels, out_channels=config.encoder_out_channels, kernel_size=1)
         self.compress_skip1 = nn.Sequential(nn.Conv2d(24, 12, kernel_size=1, bias=False), nn.BatchNorm2d(12), nn.PReLU(12))
         self.compress_skip2 = nn.Sequential(nn.Conv2d(24, 12, kernel_size=1, bias=False), nn.BatchNorm2d(12), nn.PReLU(12))
 
+    def _add_coords(self, x):
+        batch_size, _, h, w = x.size()
+
+        xx_ones = torch.ones([batch_size, 1, 1, w], dtype=torch.float32, device=x.device)
+        xx_range = torch.arange(h, dtype=torch.float32, device=x.device).view([1, 1, h, 1])
+        xx_channel = torch.matmul(xx_range, xx_ones)
+        xx_channel = xx_channel / (h - 1) * 2 - 1
+
+        yy_ones = torch.ones([batch_size, 1, h, 1], dtype=torch.float32, device=x.device)
+        yy_range = torch.arange(w, dtype=torch.float32, device=x.device).view([1, 1, 1, w])
+        yy_channel = torch.matmul(yy_ones, yy_range)
+        yy_channel = yy_channel / (w - 1) * 2 - 1
+
+        xx_channel = xx_channel.to(x.dtype)
+        yy_channel = yy_channel.to(x.dtype)
+
+        return torch.cat([x, xx_channel, yy_channel], dim=1)
+
     def forward(self, image):
-        feat_half = self.conv1(image)
+        image_coords = self._add_coords(image)
+        feat_half = self.conv1(image_coords)
         feat_quarter = self.maxpool(feat_half)
         stage2_features = self.stage2(feat_quarter)
 
@@ -212,15 +255,17 @@ class UpConvBlock(nn.Module):
 
 
 class TaskDecoder(nn.Module):
-    def __init__(self, in_channels, skip_channels=12):
+    def __init__(self, in_channels, skip_channels=12, use_attention=False):
         super().__init__()
         self.stage1 = UpConvBlock(in_channels=in_channels, out_channels=32, skip_connection_channels=skip_channels)
         self.stage2 = UpConvBlock(in_channels=32, out_channels=8, skip_connection_channels=skip_channels)
+        self.attention = SpatialAttention() if use_attention else nn.Identity()
         self.output_head = UpConvBlock(in_channels=8, out_channels=2, is_last_layer=True)
 
     def forward(self, latent_features, skip_half, skip_quarter):
         out = self.stage1(latent_features, skip_quarter)
         out = self.stage2(out, skip_half)
+        out = self.attention(out)
         out = self.output_head(out)
 
         return out
@@ -244,8 +289,8 @@ class AnviaNet(nn.Module):
 
         self.bottleneck = ConvBatchNormPReLU(in_channels=config.bottleneck_in_channels, out_channels=config.bottleneck_out_channels)
 
-        self.decoder_da = TaskDecoder(in_channels=config.decoder_in_channels, skip_channels=config.decoder_skip_channels)
-        self.decoder_ll = TaskDecoder(in_channels=config.decoder_in_channels, skip_channels=config.decoder_skip_channels)
+        self.decoder_da = TaskDecoder(in_channels=config.decoder_in_channels, skip_channels=config.decoder_skip_channels, use_attention=False)
+        self.decoder_ll = TaskDecoder(in_channels=config.decoder_in_channels, skip_channels=config.decoder_skip_channels, use_attention=True)
 
     def forward(self, image):
         encoder_features, skip_half, skip_quarter = self.encoder(image)
