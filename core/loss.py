@@ -36,7 +36,9 @@ def to_tensor(data, dtype=None):
         return data
 
 
-def focal_loss_with_logits(output, target, gamma=2.0, alpha=0.25, reduction="mean", normalized=False, reduced_threshold=None, eps=1e-6):
+def focal_loss_with_logits(
+    output, target, gamma=2.0, alpha=0.25, reduction="mean", normalized=False, reduced_threshold=None, eps=1e-6, ohem_ratio=1.0
+):
     target = target.type(output.type())
     log_prob = F.binary_cross_entropy_with_logits(output, target, reduction="none")
     prob = torch.exp(-log_prob)
@@ -51,6 +53,14 @@ def focal_loss_with_logits(output, target, gamma=2.0, alpha=0.25, reduction="mea
 
     if alpha is not None:
         loss *= alpha * target + (1.0 - alpha) * (1.0 - target)
+
+    if ohem_ratio < 1.0:
+        loss_flat = loss.view(-1)
+        num_keep = int(ohem_ratio * loss_flat.numel())
+
+        if num_keep > 0:
+            loss_flat, _ = loss_flat.topk(num_keep)
+            loss = loss_flat
 
     if normalized:
         norm_factor = focal_term.sum().clamp_min(eps)
@@ -95,7 +105,7 @@ def soft_tversky_score(output, target, alpha, beta, smooth=0.0, eps=1e-7, dims=N
 
 
 class FocalLoss(_Loss):
-    def __init__(self, mode, alpha=0.25, gamma=2.0, ignore_index=None, reduction="mean", normalized=False, reduced_threshold=None):
+    def __init__(self, mode, alpha=0.25, gamma=2.0, ignore_index=None, reduction="mean", normalized=False, reduced_threshold=None, ohem_ratio=1.0):
         super().__init__()
         self.mode = mode
         self.ignore_index = ignore_index
@@ -106,6 +116,7 @@ class FocalLoss(_Loss):
             reduced_threshold=reduced_threshold,
             reduction=reduction,
             normalized=normalized,
+            ohem_ratio=ohem_ratio,
         )
 
     def forward(self, y_pred, y_true):
@@ -262,6 +273,12 @@ class SingleLoss(nn.Module):
                 gamma=tversky_da_gamma,
                 from_logits=True,
             )
+            self.focal = FocalLoss(
+                mode=MULTICLASS_MODE,
+                alpha=focal_alpha,
+                gamma=focal_gamma,
+                ohem_ratio=config.ohem_ratio_da,
+            )
 
         if task == "LL":
             self.tver = TverskyLoss(
@@ -271,8 +288,12 @@ class SingleLoss(nn.Module):
                 gamma=tversky_ll_gamma,
                 from_logits=True,
             )
-
-        self.focal = FocalLoss(mode=MULTICLASS_MODE, alpha=focal_alpha, gamma=focal_gamma)
+            self.focal = FocalLoss(
+                mode=MULTICLASS_MODE,
+                alpha=focal_alpha,
+                gamma=focal_gamma,
+                ohem_ratio=config.ohem_ratio_ll,
+            )
 
     def forward(self, outputs, targets):
         targets = targets.long()
@@ -314,7 +335,9 @@ class TotalLoss(nn.Module):
             gamma=tversky_ll_gamma,
             from_logits=True,
         )
-        self.focal = FocalLoss(mode=MULTICLASS_MODE, alpha=focal_alpha, gamma=focal_gamma)
+
+        self.focal_da = FocalLoss(mode=MULTICLASS_MODE, alpha=focal_alpha, gamma=focal_gamma, ohem_ratio=config.ohem_ratio_da)
+        self.focal_ll = FocalLoss(mode=MULTICLASS_MODE, alpha=focal_alpha, gamma=focal_gamma, ohem_ratio=config.ohem_ratio_ll)
 
     def forward(self, outputs, targets):
         out_da, out_ll = outputs
@@ -326,8 +349,8 @@ class TotalLoss(nn.Module):
         loss_tver_da = self.tver_da(out_da, target_da)
         loss_tver_ll = self.tver_ll(out_ll, target_ll)
 
-        loss_focal_da = self.focal(out_da, target_da)
-        loss_focal_ll = self.focal(out_ll, target_ll)
+        loss_focal_da = self.focal_da(out_da, target_da)
+        loss_focal_ll = self.focal_ll(out_ll, target_ll)
 
         tversky_loss = loss_tver_da + loss_tver_ll
         focal_loss = loss_focal_da + loss_focal_ll

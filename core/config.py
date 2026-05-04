@@ -10,6 +10,8 @@ class LossConfig:
     tversky_ll_gamma: float = 1.0
     focal_alpha: float = 0.25
     focal_gamma: float = 2.0
+    ohem_ratio_da: float = 0.7
+    ohem_ratio_ll: float = 0.3
 
 
 @dataclass
