@@ -39,6 +39,7 @@ class AnviaNetConfig:
     decoder_stage1_channels: int = 32
     decoder_stage2_channels: int = 8
     decoder_skip_channels: int = 12
+    decoder_attention_kernel_size: int = 7
 
     loss: LossConfig = field(default_factory=LossConfig)
 

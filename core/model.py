@@ -35,6 +35,25 @@ class GraphConvolutionNetwork(nn.Module):
         return output_tensor
 
 
+class SpatialAttention(nn.Module):
+    def __init__(self, kernel_size):
+        super().__init__()
+        padding = kernel_size // 2
+        self.conv = nn.Conv2d(2, 1, kernel_size, padding=padding, bias=False)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, input_tensor):
+        average_output = torch.mean(input_tensor, dim=1, keepdim=True)
+        maximum_output, _ = torch.max(input_tensor, dim=1, keepdim=True)
+
+        spatial_descriptors = torch.cat([average_output, maximum_output], dim=1)
+        attention_map = self.conv(spatial_descriptors)
+
+        output_tensor = input_tensor * self.sigmoid(attention_map)
+
+        return output_tensor
+
+
 class UpSimpleBlock(nn.Module):
     def __init__(self, in_channels, out_channels):
         super().__init__()
@@ -78,16 +97,48 @@ class UpConvBlock(nn.Module):
 class ShuffleNetEncoder(nn.Module):
     def __init__(self, config):
         super().__init__()
+
         backbone = shufflenet_v2_x1_0(weights=ShuffleNet_V2_X1_0_Weights.DEFAULT)
-        self.stem_conv = backbone.conv1
+        self.stem_conv = nn.Sequential(nn.Conv2d(5, 24, 3, stride=2, padding=1, bias=False), nn.BatchNorm2d(24), nn.ReLU(inplace=True))
+        self._initialize_weights(backbone)
+
         self.maxpool = backbone.maxpool
         self.stage2 = backbone.stage2
+
         self.bottleneck = ConvBatchNormPReLU(config.encoder_in_channels, config.encoder_out_channels, 1)
         self.half_skip_compressor = nn.Sequential(nn.Conv2d(24, config.encoder_half_skip_channels, 1, bias=False), nn.BatchNorm2d(config.encoder_half_skip_channels), nn.PReLU(config.encoder_half_skip_channels))
         self.quarter_skip_compressor = nn.Sequential(nn.Conv2d(24, config.encoder_quarter_skip_channels, 1, bias=False), nn.BatchNorm2d(config.encoder_quarter_skip_channels), nn.PReLU(config.encoder_quarter_skip_channels))
 
+    @torch.no_grad()
+    def _initialize_weights(self, backbone):
+        self.stem_conv[0].weight[:, :3, :, :] = backbone.conv1[0].weight
+        self.stem_conv[0].weight[:, 3:, :, :].fill_(0.0)
+        self.stem_conv[1].load_state_dict(backbone.conv1[1].state_dict())
+
+    def _add_coordinates(self, images):
+        batch_size, _, height, width = images.size()
+
+        x_ones = torch.ones(batch_size, 1, height, 1, dtype=torch.float32, device=images.device)
+        x_range = torch.arange(height, dtype=torch.float32, device=images.device).view(1, 1, height, 1)
+        x_channel = torch.matmul(x_ones, x_range)
+        x_channel = x_channel / (height - 1) * 2 - 1
+
+        y_ones = torch.ones(batch_size, 1, 1, width, dtype=torch.float32, device=images.device)
+        y_range = torch.arange(width, dtype=torch.float32, device=images.device).view(1, 1, 1, width)
+        y_channel = torch.matmul(y_ones, y_range)
+        y_channel = x_channel / (width - 1) * 2 - 1
+
+        x_channel = x_channel.to(dtype=images.dtype)
+        y_channel = y_channel.to(dtype=images.dtype)
+
+        augmented_images = torch.cat([images, x_channel, y_channel], dim=1)
+
+        return augmented_images
+
     def forward(self, images):
-        half_features = self.stem_conv(images)
+        augmented_images = self._add_coordinates(images)
+        half_features = self.stem_conv(augmented_images)
+
         quarter_features = self.maxpool(half_features)
         stage2_features = self.stage2(quarter_features)
 
@@ -190,15 +241,17 @@ class ContextAwareAttentionModule(nn.Module):
 
 
 class TaskDecoder(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config, use_attention):
         super().__init__()
         self.stage1 = UpConvBlock(config.decoder_in_channels, config.decoder_stage1_channels, skip_connection_channels=config.decoder_skip_channels)
         self.stage2 = UpConvBlock(config.decoder_stage1_channels, config.decoder_stage2_channels, skip_connection_channels=config.decoder_skip_channels)
+        self.attention = SpatialAttention(config.decoder_attention_kernel_size) if use_attention else nn.Identity()
         self.output_head = UpConvBlock(config.decoder_stage2_channels, config.class_count, is_last_layer=True)
 
     def forward(self, latent_features, half_skip, quarter_skip):
         output_tensor = self.stage1(latent_features, quarter_skip)
         output_tensor = self.stage2(output_tensor, half_skip)
+        output_tensor = self.attention(output_tensor)
         output_tensor = self.output_head(output_tensor)
 
         return output_tensor
@@ -210,8 +263,8 @@ class AnviaNet(nn.Module):
         self.shufflenet_encoder = ShuffleNetEncoder(config)
         self.context_aware_attention_module = ContextAwareAttentionModule(config)
         self.bottleneck = ConvBatchNormPReLU(config.bottleneck_in_channels, config.bottleneck_out_channels, config.bottleneck_kernel_size)
-        self.drivable_area_decoder = TaskDecoder(config)
-        self.lane_line_decoder = TaskDecoder(config)
+        self.drivable_area_decoder = TaskDecoder(config, use_attention=False)
+        self.lane_line_decoder = TaskDecoder(config, use_attention=True)
 
     def forward(self, images):
         encoder_features, half_skip, quarter_skip = self.shufflenet_encoder(images)
