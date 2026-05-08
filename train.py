@@ -1,4 +1,6 @@
 import os
+import random
+import numpy as np
 import argparse
 import torch
 from torch.utils.data import DataLoader
@@ -12,6 +14,17 @@ from utils.engine import train_one_epoch, evaluate
 from utils.metrics import get_model_complexity
 
 
+def seed_everything(seed=42):
+    random.seed(seed)
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+
 def parse_arguments():
     parser = argparse.ArgumentParser(description="AnviaNet Training Pipeline", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
@@ -19,6 +32,7 @@ def parse_arguments():
     data_group.add_argument("--data_root", type=str, required=True, help="Path to BDD100K dataset")
     data_group.add_argument("--save_dir", type=str, default="./checkpoints", help="Directory to save checkpoints")
     data_group.add_argument("--num_workers", type=int, default=4, help="Data loader workers")
+    data_group.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
 
     model_group = parser.add_argument_group("Model Configuration")
     model_group.add_argument("--img_height", type=int, default=360, help="Target image height")
@@ -40,6 +54,7 @@ def parse_arguments():
 
 def main():
     args = parse_arguments()
+    seed_everything(args.seed)
     os.makedirs(args.save_dir, exist_ok=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[SYSTEM] Initializing AnviaNet pipeline on: {device.type.upper()}")
