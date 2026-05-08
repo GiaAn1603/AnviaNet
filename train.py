@@ -1,6 +1,8 @@
 import argparse
 import os
+import random
 
+import numpy as np
 import torch
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
@@ -21,6 +23,7 @@ def parse_arguments():
     data_group.add_argument("--data_root_path", type=str, required=True, help="Path to BDD100K dataset")
     data_group.add_argument("--checkpoint_directory", type=str, default="./checkpoints", help="Directory to save checkpoints")
     data_group.add_argument("--worker_count", type=int, default=4, help="Data loader workers")
+    data_group.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
 
     model_group = parser.add_argument_group("Model Configuration")
     model_group.add_argument("--image_height", type=int, default=360, help="Target image height")
@@ -38,8 +41,23 @@ def parse_arguments():
     return arguments
 
 
+def seed_everything(seed):
+    random.seed(seed)
+    os.environ["PYTHONHASHSEED"] = str(seed)
+
+    np.random.seed(seed)
+
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+
 def main():
     arguments = parse_arguments()
+    seed_everything(arguments.seed)
     os.makedirs(arguments.checkpoint_directory, exist_ok=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[SYSTEM] Device: {device.type.upper()}")
