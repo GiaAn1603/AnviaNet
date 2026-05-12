@@ -40,23 +40,34 @@ def evaluate(model, dataloader, device, num_classes=2, lane_class_id=1):
     ll_metric = SegmentationMetric(num_classes=num_classes)
     pbar = tqdm(dataloader, total=len(dataloader), desc="Evaluating")
 
+    da_miou_sum, ll_iou_sum, ll_acc_sum = 0.0, 0.0, 0.0
+    total_samples = 0
+
     for images, targets_da, targets_ll in pbar:
         images = images.to(device)
         targets_da = targets_da.to(device)
         targets_ll = targets_ll.to(device)
+        bs = images.size(0)
 
         out_da, out_ll = model(images)
 
         preds_da = torch.argmax(out_da, dim=1)
         preds_ll = torch.argmax(out_ll, dim=1)
 
+        da_metric.reset()
+        ll_metric.reset()
+
         da_metric.add_batch(preds_da, targets_da)
         ll_metric.add_batch(preds_ll, targets_ll)
 
-    da_miou = da_metric.mean_intersection_over_union()
+        da_miou_sum += da_metric.mean_intersection_over_union() * bs
+        ll_acc_sum += ll_metric.class_accuracy(lane_class_id) * bs
+        ll_iou_sum += ll_metric.class_iou(lane_class_id) * bs
+        total_samples += bs
 
-    ll_acc = ll_metric.class_accuracy(lane_class_id)
-    ll_iou = ll_metric.class_iou(lane_class_id)
+    da_miou = da_miou_sum / total_samples if total_samples > 0 else 0.0
+    ll_acc = ll_acc_sum / total_samples if total_samples > 0 else 0.0
+    ll_iou = ll_iou_sum / total_samples if total_samples > 0 else 0.0
 
     print("\n" + "=" * 50)
     print(f"[EVAL] Results Summary")
