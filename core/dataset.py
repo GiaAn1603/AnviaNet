@@ -101,8 +101,8 @@ class BDD100KDataset(Dataset):
                 lane_mask = cv2.flip(lane_mask, 1)
 
         image = cv2.resize(image, (self.target_width, self.target_height))
-        drivable_mask = cv2.resize(drivable_mask, (self.target_width, self.target_height), interpolation=cv2.INTER_NEAREST)
-        lane_mask = cv2.resize(lane_mask, (self.target_width, self.target_height), interpolation=cv2.INTER_NEAREST)
+        drivable_mask = cv2.resize(drivable_mask, (self.target_width, self.target_height), interpolation=cv2.INTER_LINEAR)
+        lane_mask = cv2.resize(lane_mask, (self.target_width, self.target_height), interpolation=cv2.INTER_LINEAR)
 
         drivable_mask = (drivable_mask > 0).astype(np.int64)
         lane_mask = (lane_mask > 0).astype(np.int64)
