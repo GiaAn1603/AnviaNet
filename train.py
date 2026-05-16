@@ -46,6 +46,8 @@ def parse_arguments():
     opt_group.add_argument("--batch_size", type=int, default=16, help="Batch size")
     opt_group.add_argument("--learning_rate", type=float, default=5e-4, help="Learning rate")
     opt_group.add_argument("--weight_decay", type=float, default=5e-4, help="Weight decay")
+    opt_group.add_argument("--momentum", type=float, default=0.9, help="AdamW beta1 momentum")
+    opt_group.add_argument("--eps", type=float, default=1e-8, help="AdamW epsilon")
 
     args, _ = parser.parse_known_args()
 
@@ -86,7 +88,7 @@ def main():
     config = AnviaNetConfig(img_height=args.img_height, img_width=args.img_width, num_classes=args.num_classes, lane_class_id=args.lane_class_id)
     model = AnviaNet(config=config).to(device)
     criterion = TotalLoss(config=config.loss)
-    optimizer = AdamW(params=model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
+    optimizer = AdamW(params=model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay, betas=(args.momentum, 0.999), eps=args.eps)
     scheduler = CosineAnnealingLR(optimizer=optimizer, T_max=args.epochs, eta_min=1e-6)
     scaler = torch.amp.GradScaler("cuda", enabled=device.type == "cuda")
 
