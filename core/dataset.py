@@ -71,8 +71,23 @@ def augment_hsv(image, hue_gain=0.015, saturation_gain=0.7, value_gain=0.4):
     return augmented_image
 
 
+def random_crop(image, drivable_area_mask, lane_line_mask, crop_size=(540, 960)):
+    height, width = image.shape[:2]
+    crop_height, crop_width = crop_size
+
+    if height > crop_height and width > crop_width:
+        top = random.randint(a=0, b=height - crop_height)
+        left = random.randint(a=0, b=width - crop_width)
+
+        image = image[top : top + crop_height, left : left + crop_width]
+        drivable_area_mask = drivable_area_mask[top : top + crop_height, left : left + crop_width]
+        lane_line_mask = lane_line_mask[top : top + crop_height, left : left + crop_width]
+
+    return image, drivable_area_mask, lane_line_mask
+
+
 class BDD100KDataset(Dataset):
-    def __init__(self, data_root_path, is_train, image_size, perspective_probability=0.5, hsv_probability=0.5, flip_probability=0.5):
+    def __init__(self, data_root_path, is_train, image_size, perspective_probability=0.5, hsv_probability=0.5, crop_probability=0.1, flip_probability=0.5, bilateral_probability=0.1, gaussian_probability=0.1):
         self.is_train = is_train
         self.dataset_split = "train" if is_train else "val"
         self.image_directory = os.path.join(data_root_path, "images", self.dataset_split)
@@ -83,7 +98,10 @@ class BDD100KDataset(Dataset):
 
         self.perspective_probability = perspective_probability
         self.hsv_probability = hsv_probability
+        self.crop_probability = crop_probability
         self.flip_probability = flip_probability
+        self.bilateral_probability = bilateral_probability
+        self.gaussian_probability = gaussian_probability
 
     def __len__(self):
         return len(self.image_names)
@@ -107,10 +125,19 @@ class BDD100KDataset(Dataset):
             if random.random() < self.hsv_probability:
                 image = augment_hsv(image)
 
+            if random.random() < self.crop_probability:
+                image, drivable_area_mask, lane_line_mask = random_crop(image, drivable_area_mask, lane_line_mask)
+
             if random.random() < self.flip_probability:
                 image = cv2.flip(image, flipCode=1)
                 drivable_area_mask = cv2.flip(drivable_area_mask, flipCode=1)
                 lane_line_mask = cv2.flip(lane_line_mask, flipCode=1)
+
+            if random.random() < self.bilateral_probability:
+                image = cv2.bilateralFilter(image, d=9, sigmaColor=75, sigmaSpace=75)
+
+            if random.random() < self.gaussian_probability:
+                image = cv2.GaussianBlur(image, ksize=(5, 5), sigmaX=0)
 
         image = cv2.resize(image, dsize=(self.target_width, self.target_height))
         drivable_area_mask = cv2.resize(drivable_area_mask, dsize=(self.target_width, self.target_height), interpolation=cv2.INTER_LINEAR)
