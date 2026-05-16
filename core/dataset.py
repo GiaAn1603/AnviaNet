@@ -62,6 +62,21 @@ def random_perspective(combination, translate=0.1, shear=0.0, degrees=10, scale=
     return (image, drivable_mask, lane_mask)
 
 
+def random_crop(combination, crop_size=(540, 960)):
+    image, drivable_mask, lane_mask = combination
+    height, width, _ = image.shape
+    crop_height, crop_width = crop_size
+
+    if height > crop_height and width > crop_width:
+        top = random.randint(0, height - crop_height)
+        left = random.randint(0, width - crop_width)
+        image = image[top : top + crop_height, left : left + crop_width]
+        drivable_mask = drivable_mask[top : top + crop_height, left : left + crop_width]
+        lane_mask = lane_mask[top : top + crop_height, left : left + crop_width]
+
+    return (image, drivable_mask, lane_mask)
+
+
 class BDD100KDataset(Dataset):
     def __init__(self, data_root, is_train=True, img_size=(360, 640)):
         self.is_train = is_train
@@ -95,10 +110,20 @@ class BDD100KDataset(Dataset):
             if random.random() < 0.5:
                 augment_hsv(image)
 
+            if random.random() < 0.1:
+                combination = (image, drivable_mask, lane_mask)
+                image, drivable_mask, lane_mask = random_crop(combination, crop_size=(540, 960))
+
             if random.random() < 0.5:
                 image = cv2.flip(image, 1)
                 drivable_mask = cv2.flip(drivable_mask, 1)
                 lane_mask = cv2.flip(lane_mask, 1)
+
+            if random.random() < 0.1:
+                image = cv2.bilateralFilter(image, d=9, sigmaColor=75, sigmaSpace=75)
+
+            if random.random() < 0.1:
+                image = cv2.GaussianBlur(image, ksize=(5, 5), sigmaX=0)
 
         image = cv2.resize(image, (self.target_width, self.target_height))
         drivable_mask = cv2.resize(drivable_mask, (self.target_width, self.target_height), interpolation=cv2.INTER_LINEAR)
