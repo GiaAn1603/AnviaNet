@@ -83,6 +83,43 @@ class UpSimpleBlock(nn.Module):
         return out
 
 
+class StripPooling(nn.Module):
+    def __init__(self, in_channels, norm_layer=nn.BatchNorm2d):
+        super().__init__()
+        self.pool1 = nn.AdaptiveAvgPool2d((1, None))
+        self.pool2 = nn.AdaptiveAvgPool2d((None, 1))
+
+        inter_channels = in_channels // 2 if in_channels >= 16 else in_channels
+
+        self.conv1 = nn.Sequential(
+            nn.Conv2d(in_channels, inter_channels, kernel_size=1, bias=False),
+            norm_layer(inter_channels),
+            nn.PReLU(inter_channels),
+        )
+        self.conv2 = nn.Sequential(
+            nn.Conv2d(in_channels, inter_channels, kernel_size=1, bias=False),
+            norm_layer(inter_channels),
+            nn.PReLU(inter_channels),
+        )
+
+        self.conv_out = nn.Sequential(nn.Conv2d(inter_channels, in_channels, kernel_size=1, bias=False), norm_layer(in_channels))
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, feature_map):
+        _, _, height, width = feature_map.size()
+
+        pool_x = self.conv1(self.pool1(feature_map))
+        pool_x = F.interpolate(pool_x, size=(height, width), mode="bilinear", align_corners=True)
+
+        pool_y = self.conv2(self.pool2(feature_map))
+        pool_y = F.interpolate(pool_y, size=(height, width), mode="bilinear", align_corners=True)
+
+        out = self.conv_out(pool_x + pool_y)
+        out = feature_map * self.sigmoid(out)
+
+        return out
+
+
 class SpatialAttention(nn.Module):
     def __init__(self, kernel_size=7):
         super().__init__()
@@ -253,11 +290,11 @@ class UpConvBlock(nn.Module):
 
 
 class TaskDecoder(nn.Module):
-    def __init__(self, in_channels, skip_channels=12, use_attention=False):
+    def __init__(self, in_channels, skip_channels=12):
         super().__init__()
         self.stage1 = UpConvBlock(in_channels=in_channels, out_channels=32, skip_connection_channels=skip_channels)
         self.stage2 = UpConvBlock(in_channels=32, out_channels=8, skip_connection_channels=skip_channels)
-        self.attention = SpatialAttention() if use_attention else nn.Identity()
+        self.attention = nn.Sequential(StripPooling(in_channels=8), SpatialAttention())
         self.output_head = UpConvBlock(in_channels=8, out_channels=2, is_last_layer=True)
 
     def forward(self, latent_features, skip_half, skip_quarter):
@@ -287,8 +324,8 @@ class AnviaNet(nn.Module):
 
         self.bottleneck = ConvBatchNormPReLU(in_channels=config.bottleneck_in_channels, out_channels=config.bottleneck_out_channels)
 
-        self.decoder_da = TaskDecoder(in_channels=config.decoder_in_channels, skip_channels=config.decoder_skip_channels, use_attention=False)
-        self.decoder_ll = TaskDecoder(in_channels=config.decoder_in_channels, skip_channels=config.decoder_skip_channels, use_attention=True)
+        self.decoder_da = TaskDecoder(in_channels=config.decoder_in_channels, skip_channels=config.decoder_skip_channels)
+        self.decoder_ll = TaskDecoder(in_channels=config.decoder_in_channels, skip_channels=config.decoder_skip_channels)
 
     def forward(self, image):
         encoder_features, skip_half, skip_quarter = self.encoder(image)
