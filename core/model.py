@@ -359,11 +359,26 @@ class TaskDecoder(nn.Module):
 class AnviaNet(nn.Module):
     def __init__(self, config):
         super().__init__()
+
         self.shufflenet_encoder = ShuffleNetEncoder(config)
         self.context_aware_attention_module = ContextAwareAttentionModule(config)
         self.bottleneck = ConvBatchNormPReLU(config.bottleneck_in_channels, config.bottleneck_out_channels, config.bottleneck_kernel_size)
         self.drivable_area_decoder = TaskDecoder(config, use_dual_branch_upsampling=False)
         self.lane_line_decoder = TaskDecoder(config, use_dual_branch_upsampling=True)
+
+        auxiliary_channels = config.encoder_out_channels // 2
+        self.drivable_area_auxiliary_head = nn.Sequential(
+            nn.Conv2d(config.encoder_out_channels, auxiliary_channels, 3, padding=1, bias=False),
+            nn.BatchNorm2d(auxiliary_channels),
+            nn.PReLU(auxiliary_channels),
+            nn.Conv2d(auxiliary_channels, config.class_count, 1),
+        )
+        self.lane_line_auxiliary_head = nn.Sequential(
+            nn.Conv2d(config.encoder_out_channels, auxiliary_channels, 3, padding=1, bias=False),
+            nn.BatchNorm2d(auxiliary_channels),
+            nn.PReLU(auxiliary_channels),
+            nn.Conv2d(auxiliary_channels, config.class_count, 1),
+        )
 
     def forward(self, images):
         encoder_features, half_skip, quarter_skip = self.shufflenet_encoder(images)
@@ -373,5 +388,11 @@ class AnviaNet(nn.Module):
 
         drivable_area_predictions = self.drivable_area_decoder(latent_features, half_skip, quarter_skip)
         lane_line_predictions = self.lane_line_decoder(latent_features, half_skip, quarter_skip)
+
+        if self.training:
+            drivable_area_auxiliary_predictions = self.drivable_area_auxiliary_head(encoder_features)
+            lane_line_auxiliary_predictions = self.lane_line_auxiliary_head(encoder_features)
+
+            return drivable_area_predictions, lane_line_predictions, drivable_area_auxiliary_predictions, lane_line_auxiliary_predictions
 
         return drivable_area_predictions, lane_line_predictions

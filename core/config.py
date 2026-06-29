@@ -19,6 +19,7 @@ class LossConfig:
 
     focal_alpha: float = 0.25
     focal_gamma: float = 2.0
+    auxiliary_weight: float = 0.4
 
     warmup_epochs: float = 5.0
 

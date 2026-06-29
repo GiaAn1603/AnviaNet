@@ -231,6 +231,25 @@ class TotalLoss(nn.Module):
 
         total_loss = tversky_loss + focal_loss + lovasz_weight * drivable_area_lovasz + cldice_weight * lane_line_cldice
 
+        if len(predictions) == 4:
+            drivable_area_float_targets = drivable_area_targets.unsqueeze(dim=1).to(dtype=torch.float32)
+            lane_line_float_targets = lane_line_targets.unsqueeze(dim=1).to(dtype=torch.float32)
+            drivable_area_auxiliary_predictions, lane_line_auxiliary_predictions = predictions[2], predictions[3]
+
+            interpolated_drivable_area = F.interpolate(drivable_area_float_targets, size=drivable_area_auxiliary_predictions.shape[2:], mode="nearest")
+            interpolated_lane_line = F.interpolate(lane_line_float_targets, size=lane_line_auxiliary_predictions.shape[2:], mode="nearest")
+
+            drivable_area_auxiliary_targets = interpolated_drivable_area.squeeze(dim=1).to(dtype=torch.int64)
+            lane_line_auxiliary_targets = interpolated_lane_line.squeeze(dim=1).to(dtype=torch.int64)
+
+            drivable_area_auxiliary_loss = self.drivable_area_tversky_loss(drivable_area_auxiliary_predictions, drivable_area_auxiliary_targets) + self.drivable_area_focal_loss(drivable_area_auxiliary_predictions, drivable_area_auxiliary_targets)
+            lane_line_auxiliary_loss = self.lane_line_tversky_loss(lane_line_auxiliary_predictions, lane_line_auxiliary_targets) + self.lane_line_focal_loss(lane_line_auxiliary_predictions, lane_line_auxiliary_targets)
+
+            auxiliary_loss = drivable_area_auxiliary_loss + lane_line_auxiliary_loss
+            auxiliary_weight = self.config.auxiliary_weight
+
+            total_loss += auxiliary_weight * auxiliary_loss
+
         return {
             "total": total_loss,
             "tversky_loss": tversky_loss,
