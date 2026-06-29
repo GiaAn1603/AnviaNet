@@ -8,14 +8,19 @@ class LossConfig:
     drivable_area_tversky_alpha: float = 0.7
     drivable_area_tversky_gamma: float = 1.33333333333
     drivable_area_ohem_ratio: float = 0.7
+    drivable_area_lovasz_weight: float = 0.1
 
     lane_line_class_id: int = 1
     lane_line_tversky_alpha: float = 0.9
     lane_line_tversky_gamma: float = 1.33333333333
     lane_line_ohem_ratio: float = 0.3
+    lane_line_cldice_weight: float = 0.1
+    lane_line_cldice_iterations: int = 5
 
     focal_alpha: float = 0.25
     focal_gamma: float = 2.0
+
+    warmup_epochs: float = 5.0
 
 
 @dataclass
