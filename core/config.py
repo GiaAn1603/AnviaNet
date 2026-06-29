@@ -31,6 +31,7 @@ class AnviaNetConfig:
 
     encoder_in_channels: int = 116
     encoder_out_channels: int = 128
+    encoder_epm_split_groups: int = 4
     encoder_half_skip_channels: int = 12
     encoder_quarter_skip_channels: int = 12
 

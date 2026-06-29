@@ -83,6 +83,52 @@ class SpatialAttention(nn.Module):
         return output_tensor
 
 
+class EfficientPyramidModule(nn.Module):
+    def __init__(self, in_channels, out_channels, split_groups):
+        super().__init__()
+
+        self.split_groups = split_groups
+        self.group_channels = out_channels // split_groups
+
+        self.compression_conv = nn.Sequential(nn.Conv2d(in_channels, out_channels, 1, bias=False), nn.BatchNorm2d(out_channels), nn.PReLU(out_channels))
+        self.pyramid_convs = nn.ModuleList()
+
+        for group_index in range(self.split_groups):
+            dilation = group_index + 1
+            self.pyramid_convs.append(
+                nn.Sequential(
+                    nn.Conv2d(self.group_channels, self.group_channels, 3, stride=1, padding=dilation, dilation=dilation, groups=self.group_channels, bias=False),
+                    nn.BatchNorm2d(self.group_channels),
+                    nn.PReLU(self.group_channels),
+                ),
+            )
+
+        self.fusion_conv = nn.Sequential(nn.Conv2d(out_channels, out_channels, 1, bias=False), nn.BatchNorm2d(out_channels), nn.PReLU(out_channels))
+
+    def _channel_shuffle(self, input_tensor, groups):
+        batch_size, channel_count, height, width = input_tensor.size()
+        channels_per_group = channel_count // groups
+
+        input_tensor = input_tensor.view(batch_size, groups, channels_per_group, height, width)
+        input_tensor = torch.transpose(input_tensor, dim0=1, dim1=2).contiguous()
+
+        output_tensor = input_tensor.view(batch_size, -1, height, width)
+
+        return output_tensor
+
+    def forward(self, input_tensor):
+        compressed_tensor = self.compression_conv(input_tensor)
+        splits = torch.chunk(compressed_tensor, chunks=self.split_groups, dim=1)
+        output_branches = [self.pyramid_convs[group_index](branch) for group_index, branch in enumerate(splits)]
+
+        output_tensor = torch.cat(output_branches, dim=1)
+        output_tensor = self._channel_shuffle(output_tensor, groups=self.split_groups)
+        output_tensor = self.fusion_conv(output_tensor)
+        output_tensor += compressed_tensor
+
+        return output_tensor
+
+
 class UpSimpleBlock(nn.Module):
     def __init__(self, in_channels, out_channels):
         super().__init__()
@@ -123,6 +169,31 @@ class UpConvBlock(nn.Module):
         return output_tensor
 
 
+class DualBranchUpsamplingBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, is_last_layer=False, skip_connection_channels=0):
+        super().__init__()
+
+        self.is_last_layer = is_last_layer
+        self.fine_branch = nn.Sequential(nn.ConvTranspose2d(in_channels, out_channels, 2, stride=2, bias=False), nn.BatchNorm2d(out_channels, eps=1e-03), nn.PReLU(out_channels))
+        self.coarse_branch = nn.Sequential(nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False), nn.Conv2d(in_channels, out_channels, 1, bias=False), nn.BatchNorm2d(out_channels, eps=1e-03), nn.PReLU(out_channels))
+
+        if not is_last_layer:
+            fusion_in_channels = out_channels + skip_connection_channels
+            self.fusion_layer = ConvBatchNormPReLU(fusion_in_channels, out_channels, 3)
+
+        self.output_layer = ConvBatchNormPReLU(out_channels, out_channels, 3)
+
+    def forward(self, input_tensor, skip_features=None):
+        upsampled_features = self.fine_branch(input_tensor) + self.coarse_branch(input_tensor)
+
+        if not self.is_last_layer and skip_features is not None:
+            upsampled_features = self.fusion_layer(torch.cat([upsampled_features, skip_features], dim=1))
+
+        output_tensor = self.output_layer(upsampled_features)
+
+        return output_tensor
+
+
 class ShuffleNetEncoder(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -134,7 +205,7 @@ class ShuffleNetEncoder(nn.Module):
         self.maxpool = backbone.maxpool
         self.stage2 = backbone.stage2
 
-        self.bottleneck = ConvBatchNormPReLU(config.encoder_in_channels, config.encoder_out_channels, 1)
+        self.efficient_pyramid_module = EfficientPyramidModule(config.encoder_in_channels, config.encoder_out_channels, split_groups=config.encoder_epm_split_groups)
         self.half_skip_compressor = nn.Sequential(nn.Conv2d(24, config.encoder_half_skip_channels, 1, bias=False), nn.BatchNorm2d(config.encoder_half_skip_channels), nn.PReLU(config.encoder_half_skip_channels))
         self.quarter_skip_compressor = nn.Sequential(nn.Conv2d(24, config.encoder_quarter_skip_channels, 1, bias=False), nn.BatchNorm2d(config.encoder_quarter_skip_channels), nn.PReLU(config.encoder_quarter_skip_channels))
 
@@ -169,7 +240,7 @@ class ShuffleNetEncoder(nn.Module):
         quarter_features = self.maxpool(half_features)
         stage2_features = self.stage2(quarter_features)
 
-        encoder_features = self.bottleneck(stage2_features)
+        encoder_features = self.efficient_pyramid_module(stage2_features)
         half_skip = self.half_skip_compressor(half_features)
         quarter_skip = self.quarter_skip_compressor(quarter_features)
 
@@ -268,12 +339,13 @@ class ContextAwareAttentionModule(nn.Module):
 
 
 class TaskDecoder(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config, use_dual_branch_upsampling):
         super().__init__()
-        self.stage1 = UpConvBlock(config.decoder_in_channels, config.decoder_stage1_channels, skip_connection_channels=config.decoder_skip_channels)
-        self.stage2 = UpConvBlock(config.decoder_stage1_channels, config.decoder_stage2_channels, skip_connection_channels=config.decoder_skip_channels)
+        block = DualBranchUpsamplingBlock if use_dual_branch_upsampling else UpConvBlock
+        self.stage1 = block(config.decoder_in_channels, config.decoder_stage1_channels, skip_connection_channels=config.decoder_skip_channels)
+        self.stage2 = block(config.decoder_stage1_channels, config.decoder_stage2_channels, skip_connection_channels=config.decoder_skip_channels)
         self.attention = nn.Sequential(StripPooling(config.decoder_stage2_channels), SpatialAttention(config.decoder_attention_kernel_size))
-        self.output_head = UpConvBlock(config.decoder_stage2_channels, config.class_count, is_last_layer=True)
+        self.output_head = block(config.decoder_stage2_channels, config.class_count, is_last_layer=True)
 
     def forward(self, latent_features, half_skip, quarter_skip):
         output_tensor = self.stage1(latent_features, quarter_skip)
@@ -290,8 +362,8 @@ class AnviaNet(nn.Module):
         self.shufflenet_encoder = ShuffleNetEncoder(config)
         self.context_aware_attention_module = ContextAwareAttentionModule(config)
         self.bottleneck = ConvBatchNormPReLU(config.bottleneck_in_channels, config.bottleneck_out_channels, config.bottleneck_kernel_size)
-        self.drivable_area_decoder = TaskDecoder(config)
-        self.lane_line_decoder = TaskDecoder(config)
+        self.drivable_area_decoder = TaskDecoder(config, use_dual_branch_upsampling=False)
+        self.lane_line_decoder = TaskDecoder(config, use_dual_branch_upsampling=True)
 
     def forward(self, images):
         encoder_features, half_skip, quarter_skip = self.shufflenet_encoder(images)
