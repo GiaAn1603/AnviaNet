@@ -14,6 +14,7 @@ class LossConfig:
     ohem_ratio_ll: float = 0.3
     lovasz_da_weight: float = 0.1
     cldice_ll_weight: float = 0.1
+    aux_loss_weight: float = 0.4
 
 
 @dataclass

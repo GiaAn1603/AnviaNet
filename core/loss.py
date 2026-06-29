@@ -469,7 +469,12 @@ class TotalLoss(nn.Module):
         self.cldice_ll = clDiceLoss(iterations=5)
 
     def forward(self, outputs, targets, epoch=None):
-        out_da, out_ll = outputs
+        if isinstance(outputs, tuple) and len(outputs) == 4:
+            out_da, out_ll, aux_da, aux_ll = outputs
+        else:
+            out_da, out_ll = outputs
+            aux_da, aux_ll = None, None
+
         target_da, target_ll = targets
 
         target_da = target_da.long()
@@ -500,6 +505,16 @@ class TotalLoss(nn.Module):
             cldice_weight *= warmup_factor
 
         total_loss = focal_loss + tversky_loss + lovasz_weight * loss_lovasz_da + cldice_weight * loss_cldice_ll
+
+        if aux_da is not None and aux_ll is not None:
+            aux_target_da = F.interpolate(target_da.unsqueeze(1).float(), size=aux_da.shape[2:], mode="nearest").squeeze(1).long()
+            aux_target_ll = F.interpolate(target_ll.unsqueeze(1).float(), size=aux_ll.shape[2:], mode="nearest").squeeze(1).long()
+            
+            aux_loss_da = self.focal_da(aux_da, aux_target_da) + self.tver_da(aux_da, aux_target_da)
+            aux_loss_ll = self.focal_ll(aux_ll, aux_target_ll) + self.tver_ll(aux_ll, aux_target_ll)
+            aux_loss = aux_loss_da + aux_loss_ll
+            
+            total_loss = total_loss + getattr(self.config, "aux_loss_weight", 0.4) * aux_loss
 
         return {
             "total": total_loss,

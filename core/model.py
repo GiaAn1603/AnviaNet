@@ -429,6 +429,19 @@ class AnviaNet(nn.Module):
         self.decoder_da = TaskDecoder(in_channels=config.decoder_in_channels, skip_channels=config.decoder_skip_channels, use_dual_up=False)
         self.decoder_ll = TaskDecoder(in_channels=config.decoder_in_channels, skip_channels=config.decoder_skip_channels, use_dual_up=True)
 
+        self.aux_head_da = nn.Sequential(
+            nn.Conv2d(config.encoder_out_channels, config.encoder_out_channels // 2, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(config.encoder_out_channels // 2),
+            nn.PReLU(config.encoder_out_channels // 2),
+            nn.Conv2d(config.encoder_out_channels // 2, 2, kernel_size=1),
+        )
+        self.aux_head_ll = nn.Sequential(
+            nn.Conv2d(config.encoder_out_channels, config.encoder_out_channels // 2, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(config.encoder_out_channels // 2),
+            nn.PReLU(config.encoder_out_channels // 2),
+            nn.Conv2d(config.encoder_out_channels // 2, 2, kernel_size=1),
+        )
+
     def forward(self, image):
         encoder_features, skip_half, skip_quarter = self.encoder(image)
 
@@ -437,5 +450,10 @@ class AnviaNet(nn.Module):
 
         out_da = self.decoder_da(latent_features, skip_half, skip_quarter)
         out_ll = self.decoder_ll(latent_features, skip_half, skip_quarter)
+
+        if self.training:
+            aux_da = self.aux_head_da(encoder_features)
+            aux_ll = self.aux_head_ll(encoder_features)
+            return out_da, out_ll, aux_da, aux_ll
 
         return out_da, out_ll
