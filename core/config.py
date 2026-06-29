@@ -12,6 +12,8 @@ class LossConfig:
     focal_gamma: float = 2.0
     ohem_ratio_da: float = 0.7
     ohem_ratio_ll: float = 0.3
+    lovasz_da_weight: float = 0.1
+    cldice_ll_weight: float = 0.1
 
 
 @dataclass

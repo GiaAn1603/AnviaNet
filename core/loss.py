@@ -252,6 +252,95 @@ class TverskyLoss(DiceLoss):
         return soft_tversky_score(output, target, self.alpha, self.beta, smooth, eps, dims)
 
 
+class LovaszLoss(_Loss):
+    def __init__(self, classes=[1], reduction='mean'):
+        super().__init__(reduction=reduction)
+        self.classes = classes
+
+    def lovasz_grad(self, gt_sorted):
+        p = len(gt_sorted)
+        gts = gt_sorted.sum()
+        intersection = gts - gt_sorted.float().cumsum(0)
+        union = gts + (1 - gt_sorted).float().cumsum(0)
+        jaccard = 1.0 - intersection / union
+
+        if p > 1:
+            jaccard[1:p] = jaccard[1:p] - jaccard[0:-1]
+
+        return jaccard
+
+    def forward(self, probas, labels):
+        B, C, H, W = probas.shape
+        probas = probas.permute(0, 2, 3, 1).contiguous().view(-1, C)
+        labels = labels.view(-1)
+
+        losses = []
+        for c in self.classes:
+            fg = (labels == c).float()
+
+            if fg.sum() == 0:
+                continue
+
+            class_pred = probas[:, c]
+            errors = (fg - class_pred).abs()
+            errors_sorted, perm = torch.sort(errors, 0, descending=True)
+            perm = perm.data
+            fg_sorted = fg[perm]
+            losses.append(torch.dot(errors_sorted, self.lovasz_grad(fg_sorted)))
+
+        return sum(losses) / len(losses) if losses else probas.new_tensor(0.0)
+
+
+class clDiceLoss(_Loss):
+    def __init__(self, iterations=5, reduction='mean'):
+        super().__init__(reduction=reduction)
+        self.iterations = iterations
+
+    def soft_erode(self, img):
+        if len(img.shape) == 4:
+            p1 = -F.max_pool2d(-img, kernel_size=3, stride=1, padding=1)
+        elif len(img.shape) == 3:
+            p1 = -F.max_pool1d(-img, kernel_size=3, stride=1, padding=1)
+        else:
+            raise ValueError(f"Unsupported dimensions: {img.shape}")
+
+        return p1
+
+    def soft_dilate(self, img):
+        if len(img.shape) == 4:
+            p1 = F.max_pool2d(img, kernel_size=3, stride=1, padding=1)
+        elif len(img.shape) == 3:
+            p1 = F.max_pool1d(img, kernel_size=3, stride=1, padding=1)
+        else:
+            raise ValueError(f"Unsupported dimensions: {img.shape}")
+
+        return p1
+
+    def soft_open(self, img):
+        return self.soft_dilate(self.soft_erode(img))
+
+    def soft_skeletonize(self, img):
+        img_temp = img
+        skel = torch.zeros_like(img)
+
+        for _ in range(self.iterations):
+            eroded = self.soft_erode(img_temp)
+            opened = self.soft_dilate(eroded)
+            skel = skel + F.relu(img_temp - opened)
+            img_temp = eroded
+
+        return skel
+
+    def forward(self, v_p, v_t):
+        s_p = self.soft_skeletonize(v_p)
+        s_t = self.soft_skeletonize(v_t)
+        t_prec = (torch.sum(s_p * v_t, dim=(1, 2, 3)) + 1e-7) / (torch.sum(s_p, dim=(1, 2, 3)) + 1e-7)
+        t_sens = (torch.sum(s_t * v_p, dim=(1, 2, 3)) + 1e-7) / (torch.sum(s_t, dim=(1, 2, 3)) + 1e-7)
+        cl_dice = 2.0 * t_prec * t_sens / (t_prec + t_sens + 1e-7)
+
+        return 1.0 - cl_dice.mean()
+
+
 class SingleLoss(nn.Module):
     def __init__(self, config: LossConfig = None, task=None):
         super().__init__()
@@ -260,6 +349,7 @@ class SingleLoss(nn.Module):
             config = LossConfig()
 
         self.config = config
+        self.task = task
 
         tversky_da_alpha, tversky_da_gamma = (config.tversky_da_alpha, config.tversky_da_gamma)
         tversky_ll_alpha, tversky_ll_gamma = (config.tversky_ll_alpha, config.tversky_ll_gamma)
@@ -279,6 +369,7 @@ class SingleLoss(nn.Module):
                 gamma=focal_gamma,
                 ohem_ratio=config.ohem_ratio_da,
             )
+            self.lovasz = LovaszLoss(classes=[1])
 
         if task == "LL":
             self.tver = TverskyLoss(
@@ -295,18 +386,51 @@ class SingleLoss(nn.Module):
                 gamma=focal_gamma,
                 ohem_ratio=config.ohem_ratio_ll,
             )
+            self.cldice = clDiceLoss(iterations=5)
 
-    def forward(self, outputs, targets):
+    def forward(self, outputs, targets, epoch=None):
         targets = targets.long()
         tversky_loss = self.tver(outputs, targets)
         focal_loss = self.focal(outputs, targets)
-        total_loss = focal_loss + tversky_loss
 
-        return {
-            "total": total_loss,
-            "focal": focal_loss,
-            "tversky": tversky_loss,
-        }
+        if self.task == "DA":
+            pred_probs = F.softmax(outputs, dim=1)
+            loss_lovasz_da = self.lovasz(pred_probs, targets)
+
+            lovasz_weight = getattr(self.config, "lovasz_da_weight", 0.1)
+
+            if epoch is not None:
+                warmup_factor = min(1.0, max(0.0, (epoch - 1) / 5.0))
+                lovasz_weight *= warmup_factor
+
+            total_loss = focal_loss + tversky_loss + lovasz_weight * loss_lovasz_da
+
+            return {
+                "total": total_loss,
+                "focal": focal_loss,
+                "tversky": tversky_loss,
+                "lovasz_da": loss_lovasz_da,
+            }
+
+        if self.task == "LL":
+            pred_probs = F.softmax(outputs, dim=1)
+            target_onehot = F.one_hot(targets, num_classes=2).permute(0, 3, 1, 2).float()
+            loss_cldice_ll = self.cldice(pred_probs[:, 1:2], target_onehot[:, 1:2])
+
+            cldice_weight = getattr(self.config, "cldice_ll_weight", 0.1)
+
+            if epoch is not None:
+                warmup_factor = min(1.0, max(0.0, (epoch - 1) / 5.0))
+                cldice_weight *= warmup_factor
+
+            total_loss = focal_loss + tversky_loss + cldice_weight * loss_cldice_ll
+
+            return {
+                "total": total_loss,
+                "focal": focal_loss,
+                "tversky": tversky_loss,
+                "cldice_ll": loss_cldice_ll,
+            }
 
 
 class TotalLoss(nn.Module):
@@ -341,7 +465,10 @@ class TotalLoss(nn.Module):
         self.focal_da = FocalLoss(mode=MULTICLASS_MODE, alpha=focal_alpha, gamma=focal_gamma, ohem_ratio=config.ohem_ratio_da)
         self.focal_ll = FocalLoss(mode=MULTICLASS_MODE, alpha=focal_alpha, gamma=focal_gamma, ohem_ratio=config.ohem_ratio_ll)
 
-    def forward(self, outputs, targets):
+        self.lovasz_da = LovaszLoss(classes=[1])
+        self.cldice_ll = clDiceLoss(iterations=5)
+
+    def forward(self, outputs, targets, epoch=None):
         out_da, out_ll = outputs
         target_da, target_ll = targets
 
@@ -354,12 +481,30 @@ class TotalLoss(nn.Module):
         loss_focal_da = self.focal_da(out_da, target_da)
         loss_focal_ll = self.focal_ll(out_ll, target_ll)
 
+        pred_da_probs = F.softmax(out_da, dim=1)
+        loss_lovasz_da = self.lovasz_da(pred_da_probs, target_da)
+
+        pred_ll_probs = F.softmax(out_ll, dim=1)
+        target_ll_onehot = F.one_hot(target_ll, num_classes=2).permute(0, 3, 1, 2).float()
+        loss_cldice_ll = self.cldice_ll(pred_ll_probs[:, 1:2], target_ll_onehot[:, 1:2])
+
         tversky_loss = loss_tver_da + loss_tver_ll
         focal_loss = loss_focal_da + loss_focal_ll
-        total_loss = focal_loss + tversky_loss
+
+        lovasz_weight = getattr(self.config, "lovasz_da_weight", 0.1)
+        cldice_weight = getattr(self.config, "cldice_ll_weight", 0.1)
+
+        if epoch is not None:
+            warmup_factor = min(1.0, max(0.0, (epoch - 1) / 5.0))
+            lovasz_weight *= warmup_factor
+            cldice_weight *= warmup_factor
+
+        total_loss = focal_loss + tversky_loss + lovasz_weight * loss_lovasz_da + cldice_weight * loss_cldice_ll
 
         return {
             "total": total_loss,
             "focal": focal_loss,
             "tversky": tversky_loss,
+            "lovasz_da": loss_lovasz_da,
+            "cldice_ll": loss_cldice_ll,
         }

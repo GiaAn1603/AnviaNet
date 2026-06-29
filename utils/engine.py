@@ -17,7 +17,7 @@ def train_one_epoch(model, dataloader, optimizer, criterion, scaler, device, epo
 
         with torch.autocast(device_type=device.type, enabled=device.type == "cuda"):
             out_da, out_ll = model(images)
-            loss_dict = criterion((out_da, out_ll), (targets_da, targets_ll))
+            loss_dict = criterion((out_da, out_ll), (targets_da, targets_ll), epoch=epoch)
             loss = loss_dict["total"]
 
         scaler.scale(loss).backward()
