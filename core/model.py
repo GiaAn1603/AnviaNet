@@ -33,6 +33,16 @@ def patch_recover(patched_tensor, bin_size):
     return feature_map
 
 
+def channel_shuffle(x, groups):
+    batch_size, num_channels, height, width = x.size()
+    channels_per_group = num_channels // groups
+
+    x = x.view(batch_size, groups, channels_per_group, height, width)
+    x = torch.transpose(x, 1, 2).contiguous()
+
+    return x.view(batch_size, -1, height, width)
+
+
 class GraphConvolutionNetwork(nn.Module):
     def __init__(self, num_nodes, num_channels):
         super().__init__()
@@ -81,6 +91,45 @@ class UpSimpleBlock(nn.Module):
         out = self.activation(out)
 
         return out
+
+
+class UpDualBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, skip_connection_channels=3, is_last_layer=False, kernel_size=3):
+        super().__init__()
+        self.is_last_layer = is_last_layer
+
+        self.branch_fine = nn.Sequential(
+            nn.ConvTranspose2d(in_channels, out_channels, kernel_size=2, stride=2, padding=0, bias=False),
+            nn.BatchNorm2d(out_channels, eps=1e-03),
+            nn.PReLU(out_channels),
+        )
+        self.branch_coarse = nn.Sequential(
+            nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False),
+            nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False),
+            nn.BatchNorm2d(out_channels, eps=1e-03),
+            nn.PReLU(out_channels),
+        )
+
+        if not is_last_layer:
+            self.fusion_layer = ConvBatchNormPReLU(
+                in_channels=out_channels + skip_connection_channels,
+                out_channels=out_channels,
+                kernel_size=kernel_size,
+            )
+
+        self.output_layer = ConvBatchNormPReLU(
+            in_channels=out_channels,
+            out_channels=out_channels,
+            kernel_size=kernel_size,
+        )
+
+    def forward(self, feature_map, skip_features=None):
+        upsampled_features = self.branch_fine(feature_map) + self.branch_coarse(feature_map)
+
+        if not self.is_last_layer and skip_features is not None:
+            upsampled_features = self.fusion_layer(torch.cat([upsampled_features, skip_features], dim=1))
+
+        return self.output_layer(upsampled_features)
 
 
 class StripPooling(nn.Module):
@@ -138,6 +187,58 @@ class SpatialAttention(nn.Module):
         return out
 
 
+class PyramidConvBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, split_groups=4):
+        super().__init__()
+        self.split_groups = split_groups
+        self.group_channels = out_channels // split_groups
+
+        self.compress_conv = nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False),
+            nn.BatchNorm2d(out_channels),
+            nn.PReLU(out_channels),
+        )
+
+        self.pyramid_convs = nn.ModuleList()
+
+        for i in range(self.split_groups):
+            dilation = i + 1
+
+            self.pyramid_convs.append(
+                nn.Sequential(
+                    nn.Conv2d(
+                        self.group_channels,
+                        self.group_channels,
+                        kernel_size=3,
+                        stride=1,
+                        padding=dilation,
+                        dilation=dilation,
+                        groups=self.group_channels,
+                        bias=False,
+                    ),
+                    nn.BatchNorm2d(self.group_channels),
+                    nn.PReLU(self.group_channels),
+                )
+            )
+
+        self.fusion_conv = nn.Sequential(
+            nn.Conv2d(out_channels, out_channels, kernel_size=1, bias=False),
+            nn.BatchNorm2d(out_channels),
+            nn.PReLU(out_channels),
+        )
+
+    def forward(self, x):
+        x_compressed = self.compress_conv(x)
+        splits = torch.chunk(x_compressed, self.split_groups, dim=1)
+        out_branches = [self.pyramid_convs[i](branch) for i, branch in enumerate(splits)]
+
+        out = torch.cat(out_branches, dim=1)
+        out = channel_shuffle(out, groups=self.split_groups)
+        out = self.fusion_conv(out)
+
+        return out + x_compressed
+
+
 class ShuffleNetEncoder(nn.Module):
     def __init__(self, config: AnviaNetConfig):
         super().__init__()
@@ -151,7 +252,7 @@ class ShuffleNetEncoder(nn.Module):
 
         self.maxpool = backbone.maxpool
         self.stage2 = backbone.stage2
-        self.bottleneck_conv = ConvBatchNormPReLU(in_channels=config.encoder_in_channels, out_channels=config.encoder_out_channels, kernel_size=1)
+        self.epm_module = PyramidConvBlock(in_channels=config.encoder_in_channels, out_channels=config.encoder_out_channels, split_groups=4)
         self.compress_skip1 = nn.Sequential(nn.Conv2d(24, 12, kernel_size=1, bias=False), nn.BatchNorm2d(12), nn.PReLU(12))
         self.compress_skip2 = nn.Sequential(nn.Conv2d(24, 12, kernel_size=1, bias=False), nn.BatchNorm2d(12), nn.PReLU(12))
 
@@ -177,7 +278,7 @@ class ShuffleNetEncoder(nn.Module):
         feat_quarter = self.maxpool(feat_half)
         stage2_features = self.stage2(feat_quarter)
 
-        encoder_features = self.bottleneck_conv(stage2_features)
+        encoder_features = self.epm_module(stage2_features)
 
         skip1 = self.compress_skip1(feat_half)
         skip2 = self.compress_skip2(feat_quarter)
@@ -290,12 +391,13 @@ class UpConvBlock(nn.Module):
 
 
 class TaskDecoder(nn.Module):
-    def __init__(self, in_channels, skip_channels=12):
+    def __init__(self, in_channels, skip_channels=12, use_dual_up=False):
         super().__init__()
-        self.stage1 = UpConvBlock(in_channels=in_channels, out_channels=32, skip_connection_channels=skip_channels)
-        self.stage2 = UpConvBlock(in_channels=32, out_channels=8, skip_connection_channels=skip_channels)
+        block = UpDualBlock if use_dual_up else UpConvBlock
+        self.stage1 = block(in_channels=in_channels, out_channels=32, skip_connection_channels=skip_channels)
+        self.stage2 = block(in_channels=32, out_channels=8, skip_connection_channels=skip_channels)
         self.attention = nn.Sequential(StripPooling(in_channels=8), SpatialAttention())
-        self.output_head = UpConvBlock(in_channels=8, out_channels=2, is_last_layer=True)
+        self.output_head = block(in_channels=8, out_channels=2, is_last_layer=True)
 
     def forward(self, latent_features, skip_half, skip_quarter):
         out = self.stage1(latent_features, skip_quarter)
@@ -324,8 +426,8 @@ class AnviaNet(nn.Module):
 
         self.bottleneck = ConvBatchNormPReLU(in_channels=config.bottleneck_in_channels, out_channels=config.bottleneck_out_channels)
 
-        self.decoder_da = TaskDecoder(in_channels=config.decoder_in_channels, skip_channels=config.decoder_skip_channels)
-        self.decoder_ll = TaskDecoder(in_channels=config.decoder_in_channels, skip_channels=config.decoder_skip_channels)
+        self.decoder_da = TaskDecoder(in_channels=config.decoder_in_channels, skip_channels=config.decoder_skip_channels, use_dual_up=False)
+        self.decoder_ll = TaskDecoder(in_channels=config.decoder_in_channels, skip_channels=config.decoder_skip_channels, use_dual_up=True)
 
     def forward(self, image):
         encoder_features, skip_half, skip_quarter = self.encoder(image)
