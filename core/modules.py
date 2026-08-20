@@ -5,6 +5,18 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+def channel_shuffle(input_tensor, groups):
+    batch_size, channel_count, height, width = input_tensor.size()
+    channels_per_group = channel_count // groups
+
+    input_tensor = input_tensor.view(batch_size, groups, channels_per_group, height, width)
+    input_tensor = torch.transpose(input_tensor, dim0=1, dim1=2).contiguous()
+
+    output_tensor = input_tensor.view(batch_size, -1, height, width)
+
+    return output_tensor
+
+
 class ConvBatchNormPReLU(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size):
         super().__init__()
@@ -106,24 +118,13 @@ class EfficientPyramidModule(nn.Module):
 
         self.fusion_conv = nn.Sequential(nn.Conv2d(out_channels, out_channels, 1, bias=False), nn.BatchNorm2d(out_channels), nn.PReLU(out_channels))
 
-    def _channel_shuffle(self, input_tensor, groups):
-        batch_size, channel_count, height, width = input_tensor.size()
-        channels_per_group = channel_count // groups
-
-        input_tensor = input_tensor.view(batch_size, groups, channels_per_group, height, width)
-        input_tensor = torch.transpose(input_tensor, dim0=1, dim1=2).contiguous()
-
-        output_tensor = input_tensor.view(batch_size, -1, height, width)
-
-        return output_tensor
-
     def forward(self, input_tensor):
         compressed_tensor = self.compression_conv(input_tensor)
         splits = torch.chunk(compressed_tensor, chunks=self.split_groups, dim=1)
         output_branches = [self.pyramid_convs[group_index](branch) for group_index, branch in enumerate(splits)]
 
         output_tensor = torch.cat(output_branches, dim=1)
-        output_tensor = self._channel_shuffle(output_tensor, groups=self.split_groups)
+        output_tensor = channel_shuffle(output_tensor, groups=self.split_groups)
         output_tensor = self.fusion_conv(output_tensor)
         output_tensor += compressed_tensor
 
@@ -228,17 +229,6 @@ class FullScaleAttentionModule(nn.Module):
         self.batch_norm = nn.BatchNorm2d(out_channels)
         self.activation = nn.Hardswish(inplace=True)
 
-    def _channel_shuffle(self, input_tensor, groups):
-        batch_size, channel_count, height, width = input_tensor.size()
-        channels_per_group = channel_count // groups
-
-        input_tensor = input_tensor.view(batch_size, groups, channels_per_group, height, width)
-        input_tensor = torch.transpose(input_tensor, dim0=1, dim1=2).contiguous()
-
-        output_tensor = input_tensor.view(batch_size, -1, height, width)
-
-        return output_tensor
-
     def forward(self, input_tensor):
         action_features, idle_features = torch.split(input_tensor, [self.action_channels, self.idle_channels], dim=1)
         action_features = self.partial_conv(action_features)
@@ -246,7 +236,7 @@ class FullScaleAttentionModule(nn.Module):
 
         fused_features = torch.cat([action_features, idle_features], dim=1)
         mixed_features = self.mixed_conv(fused_features)
-        shuffled_features = self._channel_shuffle(mixed_features, groups=4)
+        shuffled_features = channel_shuffle(mixed_features, groups=4)
 
         attention_features = self.efficient_multi_scale_attention(shuffled_features)
 
