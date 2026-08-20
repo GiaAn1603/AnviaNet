@@ -1,3 +1,5 @@
+import math
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -129,6 +131,132 @@ class EfficientPyramidModule(nn.Module):
         return output_tensor
 
 
+class SpatialGroupEnhance(nn.Module):
+    def __init__(self, groups):
+        super().__init__()
+        self.groups = groups
+        self.average_pool = nn.AdaptiveAvgPool2d(1)
+        self.weight = nn.Parameter(torch.zeros(1, groups, 1, 1))
+        self.bias = nn.Parameter(torch.ones(1, groups, 1, 1))
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, input_tensor):
+        batch_size, channels, height, width = input_tensor.size()
+        channels_per_group = channels // self.groups
+        batch_groups = batch_size * self.groups
+        grouped_tensor = input_tensor.view(batch_groups, channels_per_group, height, width)
+
+        global_features = self.average_pool(grouped_tensor)
+        attention_map = (grouped_tensor * global_features).sum(dim=1, keepdim=True)
+        attention_map = attention_map.view(batch_groups, -1)
+
+        normalized_attention = attention_map - attention_map.mean(dim=1, keepdim=True)
+        normalized_attention = normalized_attention / (attention_map.std(dim=1, keepdim=True) + 1e-5)
+
+        scaled_attention = normalized_attention.view(batch_size, self.groups, height, width)
+        scaled_attention = scaled_attention * self.weight + self.bias
+        scaled_attention = scaled_attention.view(batch_groups, 1, height, width)
+
+        output_tensor = grouped_tensor * self.sigmoid(scaled_attention)
+        output_tensor = output_tensor.view(batch_size, channels, height, width)
+
+        return output_tensor
+
+
+class EfficientMultiScaleAttention(nn.Module):
+    def __init__(self, in_channels, split_factor):
+        super().__init__()
+
+        self.split_factor = split_factor
+        group_channels = in_channels // self.split_factor
+
+        self.global_average_pool = nn.AdaptiveAvgPool2d((1, 1))
+        self.horizontal_pool = nn.AdaptiveAvgPool2d((None, 1))
+        self.vertical_pool = nn.AdaptiveAvgPool2d((1, None))
+
+        self.group_norm = nn.GroupNorm(group_channels, group_channels)
+        self.interaction_conv = nn.Conv2d(group_channels, group_channels, 1)
+        self.spatial_conv = nn.Conv2d(group_channels, group_channels, 3, stride=1, padding=1)
+
+        self.softmax = nn.Softmax(dim=-1)
+
+    def forward(self, input_tensor):
+        batch_size, channels, height, width = input_tensor.size()
+        channels_per_group = channels // self.split_factor
+        batch_splits = batch_size * self.split_factor
+        grouped_tensor = input_tensor.view(batch_splits, channels_per_group, height, width)
+
+        horizontal_features = self.horizontal_pool(grouped_tensor)
+        vertical_features = self.vertical_pool(grouped_tensor).transpose(dim0=2, dim1=3)
+
+        concatenated_features = torch.cat([horizontal_features, vertical_features], dim=2)
+        interacted_features = self.interaction_conv(concatenated_features)
+        horizontal_attention, vertical_attention = torch.split(interacted_features, [height, width], dim=2)
+
+        cross_spatial_features = grouped_tensor * horizontal_attention.sigmoid() * vertical_attention.transpose(dim0=2, dim1=3).sigmoid()
+        cross_spatial_features = self.group_norm(cross_spatial_features)
+        local_spatial_features = self.spatial_conv(grouped_tensor)
+
+        cross_global_features = self.global_average_pool(cross_spatial_features).view(batch_splits, channels_per_group, 1).transpose(dim0=1, dim1=2)
+        cross_weights = self.softmax(cross_global_features)
+        reshaped_local_features = local_spatial_features.view(batch_splits, channels_per_group, -1)
+
+        local_global_features = self.global_average_pool(local_spatial_features).view(batch_splits, channels_per_group, 1).transpose(dim0=1, dim1=2)
+        local_weights = self.softmax(local_global_features)
+        reshaped_cross_features = cross_spatial_features.view(batch_splits, channels_per_group, -1)
+
+        fused_attention = torch.matmul(cross_weights, reshaped_local_features) + torch.matmul(local_weights, reshaped_cross_features)
+        fused_attention = fused_attention.view(batch_splits, 1, height, width)
+
+        output_tensor = (grouped_tensor * fused_attention.sigmoid()).view(batch_size, channels, height, width)
+
+        return output_tensor
+
+
+class FullScaleAttentionModule(nn.Module):
+    def __init__(self, in_channels, out_channels, sge_groups, ema_split_factor):
+        super().__init__()
+
+        self.action_channels = max(8, math.ceil(in_channels / 4 / 8) * 8)
+        self.idle_channels = in_channels - self.action_channels
+
+        self.partial_conv = nn.Conv2d(self.action_channels, self.action_channels, 3, padding=1, groups=self.action_channels)
+        self.spatial_group_enhance = SpatialGroupEnhance(groups=sge_groups)
+
+        self.mixed_conv = nn.Conv2d(in_channels, out_channels, 1, groups=4, bias=False)
+        self.efficient_multi_scale_attention = EfficientMultiScaleAttention(out_channels, split_factor=ema_split_factor)
+
+        self.batch_norm = nn.BatchNorm2d(out_channels)
+        self.activation = nn.Hardswish(inplace=True)
+
+    def _channel_shuffle(self, input_tensor, groups):
+        batch_size, channel_count, height, width = input_tensor.size()
+        channels_per_group = channel_count // groups
+
+        input_tensor = input_tensor.view(batch_size, groups, channels_per_group, height, width)
+        input_tensor = torch.transpose(input_tensor, dim0=1, dim1=2).contiguous()
+
+        output_tensor = input_tensor.view(batch_size, -1, height, width)
+
+        return output_tensor
+
+    def forward(self, input_tensor):
+        action_features, idle_features = torch.split(input_tensor, [self.action_channels, self.idle_channels], dim=1)
+        action_features = self.partial_conv(action_features)
+        action_features = self.spatial_group_enhance(action_features)
+
+        fused_features = torch.cat([action_features, idle_features], dim=1)
+        mixed_features = self.mixed_conv(fused_features)
+        shuffled_features = self._channel_shuffle(mixed_features, groups=4)
+
+        attention_features = self.efficient_multi_scale_attention(shuffled_features)
+
+        output_tensor = self.batch_norm(attention_features)
+        output_tensor = self.activation(output_tensor)
+
+        return output_tensor
+
+
 class UpSimpleBlock(nn.Module):
     def __init__(self, in_channels, out_channels):
         super().__init__()
@@ -206,6 +334,8 @@ class ShuffleNetEncoder(nn.Module):
         self.stage2 = backbone.stage2
 
         self.efficient_pyramid_module = EfficientPyramidModule(config.encoder_in_channels, config.encoder_out_channels, split_groups=config.encoder_epm_split_groups)
+        self.full_scale_attention_module = FullScaleAttentionModule(config.encoder_out_channels, config.encoder_out_channels, sge_groups=config.encoder_fsa_sge_groups, ema_split_factor=config.encoder_fsa_ema_split_factor)
+
         self.half_skip_compressor = nn.Sequential(nn.Conv2d(24, config.encoder_half_skip_channels, 1, bias=False), nn.BatchNorm2d(config.encoder_half_skip_channels), nn.PReLU(config.encoder_half_skip_channels))
         self.quarter_skip_compressor = nn.Sequential(nn.Conv2d(24, config.encoder_quarter_skip_channels, 1, bias=False), nn.BatchNorm2d(config.encoder_quarter_skip_channels), nn.PReLU(config.encoder_quarter_skip_channels))
 
@@ -241,6 +371,8 @@ class ShuffleNetEncoder(nn.Module):
         stage2_features = self.stage2(quarter_features)
 
         encoder_features = self.efficient_pyramid_module(stage2_features)
+        encoder_features = self.full_scale_attention_module(encoder_features)
+
         half_skip = self.half_skip_compressor(half_features)
         quarter_skip = self.quarter_skip_compressor(quarter_features)
 
