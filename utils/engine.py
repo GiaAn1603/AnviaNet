@@ -1,10 +1,58 @@
+import math
+from copy import deepcopy
+
 import torch
+from torch.optim.lr_scheduler import LambdaLR
 from tqdm import tqdm
 
 from utils.metrics import AverageMeter, SegmentationMetric
 
 
-def train_one_epoch(model, dataloader, criterion, optimizer, scaler, device, epoch, max_epochs, scheduler=None):
+class EMAModel:
+    def __init__(self, model, initial_decay, initial_updates):
+        self.ema_model = deepcopy(model).eval()
+        self.base_decay = initial_decay
+        self.updates_count = initial_updates
+
+        for parameter in self.ema_model.parameters():
+            parameter.requires_grad_(False)
+
+    def _calculate_decay(self, current_updates):
+        decay_ramp = 1.0 - math.exp(-current_updates / 2000.0)
+        current_decay = self.base_decay * decay_ramp
+
+        return current_decay
+
+    @torch.no_grad()
+    def update(self, active_model):
+        self.updates_count += 1
+        current_decay = self._calculate_decay(self.updates_count)
+        active_state_dict = active_model.state_dict()
+
+        for name, value in self.ema_model.state_dict().items():
+            if value.dtype.is_floating_point:
+                value *= current_decay
+
+                active_value = active_state_dict[name].detach()
+                residual_weight = 1.0 - current_decay
+                value += residual_weight * active_value
+
+
+class PolynomialDecayScheduler(LambdaLR):
+    def __init__(self, optimizer, max_epochs, power):
+        self.max_epochs = max_epochs
+        self.power = power
+
+        super().__init__(optimizer, lr_lambda=self._calculate_decay)
+
+    def _calculate_decay(self, current_epoch):
+        decay_ratio = current_epoch / self.max_epochs
+        decay_factor = (1.0 - decay_ratio) ** self.power
+
+        return decay_factor
+
+
+def train_one_epoch(model, dataloader, criterion, optimizer, scaler, device, epoch, max_epochs, ema=None, scheduler=None):
     model.train()
     loss_meter = AverageMeter()
     progress_bar = tqdm(dataloader, total=len(dataloader), bar_format="{l_bar}{bar:10}{r_bar}")
@@ -24,6 +72,9 @@ def train_one_epoch(model, dataloader, criterion, optimizer, scaler, device, epo
         scaler.scale(loss).backward()
         scaler.step(optimizer)
         scaler.update()
+
+        if ema is not None:
+            ema.update(model)
 
         loss_meter.update(loss.item(), images.size(dim=0))
         progress_bar.set_description(f"Epoch [{epoch}/{max_epochs}] | Total Loss: {loss_meter.average:.4f} | Learning Rate: {optimizer.param_groups[0]['lr']:.6f}")

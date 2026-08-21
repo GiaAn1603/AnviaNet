@@ -5,14 +5,13 @@ import random
 import numpy as np
 import torch
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader
 
 from core.config import AnviaNetConfig
 from core.dataset import BDD100KDataset
 from core.loss import TotalLoss
 from core.model import AnviaNet
-from utils.engine import train_one_epoch, evaluate
+from utils.engine import EMAModel, PolynomialDecayScheduler, train_one_epoch, evaluate
 from utils.metrics import get_model_complexity
 
 
@@ -37,6 +36,7 @@ def parse_arguments():
     optimization_group.add_argument("--weight_decay", type=float, default=5e-4, help="Weight decay")
     optimization_group.add_argument("--momentum", type=float, default=0.9, help="AdamW beta1 momentum")
     optimization_group.add_argument("--epsilon", type=float, default=1e-8, help="AdamW epsilon")
+    optimization_group.add_argument("--poly_power", type=float, default=0.9, help="PolyLR power")
 
     arguments, _ = parser.parse_known_args()
 
@@ -86,7 +86,8 @@ def main():
     model = AnviaNet(config).to(device)
     criterion = TotalLoss(config.loss)
     optimizer = AdamW(model.parameters(), lr=arguments.learning_rate, weight_decay=arguments.weight_decay, betas=(arguments.momentum, 0.999), eps=arguments.epsilon)
-    scheduler = CosineAnnealingLR(optimizer, T_max=arguments.epochs, eta_min=1e-6)
+    ema = EMAModel(model, initial_decay=0.9999, initial_updates=0)
+    scheduler = PolynomialDecayScheduler(optimizer, max_epochs=arguments.epochs, power=arguments.poly_power)
     scaler = torch.amp.GradScaler(device="cuda", enabled=device.type == "cuda")
 
     start_epoch = 1
@@ -99,6 +100,8 @@ def main():
         print(f"[RESUME] Loading: {arguments.resume}")
         checkpoint = torch.load(arguments.resume, map_location=device)
         model.load_state_dict(checkpoint["model_state_dict"])
+        ema.ema_model.load_state_dict(checkpoint["ema_state_dict"])
+        ema.updates_count = checkpoint.get("ema_updates_count", 0)
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
 
@@ -125,10 +128,11 @@ def main():
             device,
             epoch=epoch,
             max_epochs=arguments.epochs,
+            ema=ema,
             scheduler=scheduler,
         )
 
-        drivable_area_miou, lane_line_accuracy, lane_line_iou = evaluate(model, validation_loader, device, class_count=config.class_count, lane_line_class_id=config.loss.lane_line_class_id)
+        drivable_area_miou, lane_line_accuracy, lane_line_iou = evaluate(ema.ema_model, validation_loader, device, class_count=config.class_count, lane_line_class_id=config.loss.lane_line_class_id)
         current_miou = (drivable_area_miou + lane_line_iou) / 2.0
 
         if current_miou > best_miou:
@@ -141,6 +145,8 @@ def main():
             checkpoint = {
                 "epoch": epoch,
                 "model_state_dict": model.state_dict(),
+                "ema_state_dict": ema.ema_model.state_dict(),
+                "ema_updates_count": ema.updates_count,
                 "optimizer_state_dict": optimizer.state_dict(),
                 "scheduler_state_dict": scheduler.state_dict(),
                 "miou": best_miou,
@@ -156,6 +162,8 @@ def main():
         last_checkpoint = {
             "epoch": epoch,
             "model_state_dict": model.state_dict(),
+            "ema_state_dict": ema.ema_model.state_dict(),
+            "ema_updates_count": ema.updates_count,
             "optimizer_state_dict": optimizer.state_dict(),
             "scheduler_state_dict": scheduler.state_dict(),
             "miou": best_miou,
