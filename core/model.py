@@ -92,7 +92,7 @@ class ContextAwareAttentionModule(nn.Module):
         self.local_to_global_conv = nn.Conv2d(total_bins, 1, 1)
         self.activation = nn.PReLU(1)
 
-        inner_channels = config.caam_in_channels // 2
+        inner_channels = config.caam_in_channels // 4
         self.projection_query = nn.Linear(config.caam_in_channels, inner_channels)
         self.projection_key = nn.Linear(config.caam_in_channels, inner_channels)
         self.projection_value = nn.Linear(config.caam_in_channels, inner_channels)
@@ -169,13 +169,13 @@ class ContextAwareAttentionModule(nn.Module):
 
 
 class TaskDecoder(nn.Module):
-    def __init__(self, config, use_dual_branch_upsampling):
+    def __init__(self, config, decoder_config, use_dual_branch_upsampling):
         super().__init__()
         block = DualBranchUpsamplingBlock if use_dual_branch_upsampling else UpConvBlock
-        self.stage1 = block(config.decoder_in_channels, config.decoder_stage1_channels, skip_connection_channels=config.decoder_skip_channels)
-        self.stage2 = block(config.decoder_stage1_channels, config.decoder_stage2_channels, skip_connection_channels=config.decoder_skip_channels)
-        self.attention = nn.Sequential(StripPooling(config.decoder_stage2_channels), SpatialAttention(config.decoder_attention_kernel_size))
-        self.output_head = block(config.decoder_stage2_channels, config.class_count, is_last_layer=True)
+        self.stage1 = block(decoder_config.in_channels, decoder_config.stage1_channels, skip_connection_channels=decoder_config.skip_channels)
+        self.stage2 = block(decoder_config.stage1_channels, decoder_config.stage2_channels, skip_connection_channels=decoder_config.skip_channels)
+        self.attention = nn.Sequential(StripPooling(decoder_config.stage2_channels), SpatialAttention(decoder_config.attention_kernel_size))
+        self.output_head = block(decoder_config.stage2_channels, config.class_count, is_last_layer=True)
 
     def forward(self, latent_features, half_skip, quarter_skip):
         output_tensor = self.stage1(latent_features, quarter_skip)
@@ -190,11 +190,13 @@ class AnviaNet(nn.Module):
     def __init__(self, config):
         super().__init__()
 
+        self.config = config
+
         self.shufflenet_encoder = ShuffleNetEncoder(config)
         self.context_aware_attention_module = ContextAwareAttentionModule(config)
         self.bottleneck = ConvBatchNormPReLU(config.bottleneck_in_channels, config.bottleneck_out_channels, config.bottleneck_kernel_size)
-        self.drivable_area_decoder = TaskDecoder(config, use_dual_branch_upsampling=False)
-        self.lane_line_decoder = TaskDecoder(config, use_dual_branch_upsampling=True)
+        self.drivable_area_decoder = TaskDecoder(config, config.drivable_area_decoder, use_dual_branch_upsampling=False)
+        self.lane_line_decoder = TaskDecoder(config, config.lane_line_decoder, use_dual_branch_upsampling=True)
 
         auxiliary_channels = config.encoder_out_channels // 2
         self.drivable_area_auxiliary_head = nn.Sequential(
@@ -216,8 +218,17 @@ class AnviaNet(nn.Module):
         caam_features = self.context_aware_attention_module(encoder_features)
         latent_features = self.bottleneck(caam_features)
 
-        drivable_area_predictions = self.drivable_area_decoder(latent_features, half_skip, quarter_skip)
-        lane_line_predictions = self.lane_line_decoder(latent_features, half_skip, quarter_skip)
+        drivable_area_features = latent_features[:, : self.config.drivable_area_decoder.in_channels, :, :]
+        lane_line_features = latent_features[:, -self.config.lane_line_decoder.in_channels :, :, :]
+
+        drivable_area_half_skip_features = half_skip[:, : self.config.drivable_area_decoder.skip_channels, :, :]
+        lane_line_half_skip_features = half_skip[:, -self.config.lane_line_decoder.skip_channels :, :, :]
+
+        drivable_area_quarter_skip_features = quarter_skip[:, : self.config.drivable_area_decoder.skip_channels, :, :]
+        lane_line_quarter_skip_features = quarter_skip[:, -self.config.lane_line_decoder.skip_channels :, :, :]
+
+        drivable_area_predictions = self.drivable_area_decoder(drivable_area_features, drivable_area_half_skip_features, drivable_area_quarter_skip_features)
+        lane_line_predictions = self.lane_line_decoder(lane_line_features, lane_line_half_skip_features, lane_line_quarter_skip_features)
 
         if self.training:
             drivable_area_auxiliary_predictions = self.drivable_area_auxiliary_head(encoder_features)

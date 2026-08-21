@@ -3,6 +3,15 @@ from typing import Tuple
 
 
 @dataclass
+class TaskDecoderConfig:
+    in_channels: int
+    stage1_channels: int
+    stage2_channels: int
+    skip_channels: int
+    attention_kernel_size: int
+
+
+@dataclass
 class LossConfig:
     drivable_area_class_id: int = 1
     drivable_area_tversky_alpha: float = 0.7
@@ -37,22 +46,19 @@ class AnviaNetConfig:
     encoder_epm_split_groups: int = 4
     encoder_fsa_sge_groups: int = 8
     encoder_fsa_ema_split_factor: int = 8
-    encoder_half_skip_channels: int = 12
-    encoder_quarter_skip_channels: int = 12
+    encoder_half_skip_channels: int = 40
+    encoder_quarter_skip_channels: int = 40
 
     caam_in_channels: int = 128
-    caam_activation_channels: int = 128
+    caam_activation_channels: int = 32
     caam_bin_size: Tuple[int, int] = (3, 4)
 
     bottleneck_in_channels: int = 128
-    bottleneck_out_channels: int = 64
-    bottleneck_kernel_size: int = 3
+    bottleneck_out_channels: int = 384
+    bottleneck_kernel_size: int = 1
 
-    decoder_in_channels: int = 64
-    decoder_stage1_channels: int = 32
-    decoder_stage2_channels: int = 8
-    decoder_skip_channels: int = 12
-    decoder_attention_kernel_size: int = 7
+    drivable_area_decoder: TaskDecoderConfig = field(default_factory=lambda: TaskDecoderConfig(in_channels=64, stage1_channels=32, stage2_channels=8, skip_channels=16, attention_kernel_size=7))
+    lane_line_decoder: TaskDecoderConfig = field(default_factory=lambda: TaskDecoderConfig(in_channels=320, stage1_channels=24, stage2_channels=8, skip_channels=24, attention_kernel_size=7))
 
     loss: LossConfig = field(default_factory=LossConfig)
 
