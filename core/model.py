@@ -29,7 +29,7 @@ class ShuffleNetEncoder(nn.Module):
         self.stage3 = backbone.stage3[: config.encoder_stage3_block_count]
 
         self.stage_fusion_module = StageFusionModule(config.encoder_stage2_channels, config.encoder_stage3_channels, config.encoder_out_channels)
-        self.efficient_pyramid_module = EfficientPyramidModule(config.encoder_out_channels, config.encoder_out_channels, split_groups=config.encoder_epm_split_groups)
+        self.efficient_pyramid_module = EfficientPyramidModule(config.encoder_out_channels, config.encoder_out_channels, split_groups=config.encoder_epm_split_groups, dilations=config.encoder_epm_dilations)
         self.full_scale_attention_module = FullScaleAttentionModule(config.encoder_out_channels, config.encoder_out_channels, sge_groups=config.encoder_fsa_sge_groups, ema_split_factor=config.encoder_fsa_ema_split_factor)
 
         self.half_skip_compressor = nn.Sequential(nn.Conv2d(24, config.encoder_half_skip_channels, 1, bias=False), nn.BatchNorm2d(config.encoder_half_skip_channels), nn.PReLU(config.encoder_half_skip_channels))

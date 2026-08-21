@@ -121,7 +121,7 @@ class StageFusionModule(nn.Module):
 
 
 class EfficientPyramidModule(nn.Module):
-    def __init__(self, in_channels, out_channels, split_groups):
+    def __init__(self, in_channels, out_channels, split_groups, dilations):
         super().__init__()
 
         self.split_groups = split_groups
@@ -130,8 +130,7 @@ class EfficientPyramidModule(nn.Module):
         self.compression_conv = nn.Sequential(nn.Conv2d(in_channels, out_channels, 1, bias=False), nn.BatchNorm2d(out_channels), nn.PReLU(out_channels))
         self.pyramid_convs = nn.ModuleList()
 
-        for group_index in range(self.split_groups):
-            dilation = group_index + 1
+        for dilation in dilations:
             self.pyramid_convs.append(
                 nn.Sequential(
                     nn.Conv2d(self.group_channels, self.group_channels, 3, stride=1, padding=dilation, dilation=dilation, groups=self.group_channels, bias=False),

@@ -44,6 +44,7 @@ class AnviaNetConfig:
     encoder_stage3_block_count: int = 2
     encoder_out_channels: int = 128
     encoder_epm_split_groups: int = 4
+    encoder_epm_dilations: tuple = (1, 2, 5, 9)
     encoder_fsa_sge_groups: int = 8
     encoder_fsa_ema_split_factor: int = 8
     encoder_half_skip_channels: int = 40
@@ -63,6 +64,9 @@ class AnviaNetConfig:
     loss: LossConfig = field(default_factory=LossConfig)
 
     def __post_init__(self):
+        if self.encoder_epm_split_groups != len(self.encoder_epm_dilations):
+            raise ValueError(f"EPM split groups ({self.encoder_epm_split_groups}) != EPM dilations length ({len(self.encoder_epm_dilations)}). Adjust encoder_epm_split_groups or encoder_epm_dilations.")
+
         downsample_factor = 8
         feature_height = self.image_height // downsample_factor
         feature_width = self.image_width // downsample_factor
