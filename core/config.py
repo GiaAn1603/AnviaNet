@@ -30,7 +30,9 @@ class AnviaNetConfig:
     image_width: int = 640
     class_count: int = 2
 
-    encoder_in_channels: int = 116
+    encoder_stage2_channels: int = 116
+    encoder_stage3_channels: int = 232
+    encoder_stage3_block_count: int = 2
     encoder_out_channels: int = 128
     encoder_epm_split_groups: int = 4
     encoder_fsa_sge_groups: int = 8

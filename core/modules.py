@@ -96,6 +96,30 @@ class SpatialAttention(nn.Module):
         return output_tensor
 
 
+class StageFusionModule(nn.Module):
+    def __init__(self, fine_channels, coarse_channels, out_channels):
+        super().__init__()
+
+        self.fine_projection = ConvBatchNormPReLU(fine_channels, out_channels, 1)
+        self.coarse_projection = ConvBatchNormPReLU(coarse_channels, out_channels, 1)
+
+        fused_channels = out_channels * 2
+        self.fusion_conv = ConvBatchNormPReLU(fused_channels, out_channels, 1)
+
+    def forward(self, fine_features, coarse_features):
+        _, _, height, width = fine_features.size()
+
+        upsampled_coarse_features = F.interpolate(coarse_features, size=(height, width), mode="bilinear", align_corners=False)
+
+        projected_fine_features = self.fine_projection(fine_features)
+        projected_coarse_features = self.coarse_projection(upsampled_coarse_features)
+
+        fused_features = torch.cat([projected_fine_features, projected_coarse_features], dim=1)
+        output_tensor = self.fusion_conv(fused_features)
+
+        return output_tensor
+
+
 class EfficientPyramidModule(nn.Module):
     def __init__(self, in_channels, out_channels, split_groups):
         super().__init__()
