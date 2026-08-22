@@ -11,7 +11,7 @@ from core.config import AnviaNetConfig
 from core.dataset import BDD100KDataset
 from core.loss import TotalLoss
 from core.model import AnviaNet
-from utils.engine import EMAModel, PolynomialDecayScheduler, train_one_epoch, evaluate
+from utils.engine import ExponentialMovingAverageModel, PolynomialDecayScheduler, train_one_epoch, evaluate
 from utils.metrics import get_model_complexity
 
 
@@ -34,9 +34,7 @@ def parse_arguments():
     optimization_group.add_argument("--batch_size", type=int, default=16, help="Batch size")
     optimization_group.add_argument("--learning_rate", type=float, default=5e-4, help="Learning rate")
     optimization_group.add_argument("--weight_decay", type=float, default=5e-4, help="Weight decay")
-    optimization_group.add_argument("--momentum", type=float, default=0.9, help="AdamW beta1 momentum")
-    optimization_group.add_argument("--epsilon", type=float, default=1e-8, help="AdamW epsilon")
-    optimization_group.add_argument("--poly_power", type=float, default=0.9, help="PolyLR power")
+    optimization_group.add_argument("--polynomial_power", type=float, default=0.9, help="Polynomial learning rate power")
 
     arguments, _ = parser.parse_known_args()
 
@@ -64,30 +62,19 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[SYSTEM] Device: {device.type.upper()}")
 
-    print("[DATA] Loading BDD100K dataset...")
-    train_loader = DataLoader(
-        BDD100KDataset(arguments.data_root_path, is_train=True, image_size=(arguments.image_height, arguments.image_width)),
-        batch_size=arguments.batch_size,
-        shuffle=True,
-        num_workers=arguments.worker_count,
-        pin_memory=True,
-        drop_last=True,
-    )
-    validation_loader = DataLoader(
-        BDD100KDataset(arguments.data_root_path, is_train=False, image_size=(arguments.image_height, arguments.image_width)),
-        batch_size=arguments.batch_size,
-        shuffle=False,
-        num_workers=arguments.worker_count,
-        pin_memory=True,
-    )
-
-    print("[MODEL] Assembling AnviaNet model")
+    print("[CONFIG] Initializing AnviaNet configuration...")
     config = AnviaNetConfig(image_height=arguments.image_height, image_width=arguments.image_width)
+
+    print("[DATA] Loading BDD100K dataset...")
+    train_loader = DataLoader(BDD100KDataset(arguments.data_root_path, config, is_train=True), batch_size=arguments.batch_size, shuffle=True, num_workers=arguments.worker_count, pin_memory=True, drop_last=True)
+    validation_loader = DataLoader(BDD100KDataset(arguments.data_root_path, config, is_train=False), batch_size=arguments.batch_size, shuffle=False, num_workers=arguments.worker_count, pin_memory=True)
+
+    print("[MODEL] Assembling AnviaNet model...")
     model = AnviaNet(config).to(device)
     criterion = TotalLoss(config.loss)
-    optimizer = AdamW(model.parameters(), lr=arguments.learning_rate, weight_decay=arguments.weight_decay, betas=(arguments.momentum, 0.999), eps=arguments.epsilon)
-    ema = EMAModel(model, initial_decay=0.9999, initial_updates=0)
-    scheduler = PolynomialDecayScheduler(optimizer, max_epochs=arguments.epochs, power=arguments.poly_power)
+    optimizer = AdamW(model.parameters(), lr=arguments.learning_rate, weight_decay=arguments.weight_decay, betas=(config.optimization.momentum, 0.999), eps=config.optimization.epsilon)
+    exponential_moving_average = ExponentialMovingAverageModel(model, initial_decay=0.9999, initial_updates=0)
+    scheduler = PolynomialDecayScheduler(optimizer, max_epochs=arguments.epochs, power=arguments.polynomial_power)
     scaler = torch.amp.GradScaler(device="cuda", enabled=device.type == "cuda")
 
     start_epoch = 1
@@ -97,11 +84,11 @@ def main():
     best_lane_line_iou = 0.0
 
     if arguments.resume and os.path.exists(arguments.resume):
-        print(f"[RESUME] Loading: {arguments.resume}")
+        print(f"[RESUME] Loading checkpoint: {arguments.resume}")
         checkpoint = torch.load(arguments.resume, map_location=device)
         model.load_state_dict(checkpoint["model_state_dict"])
-        ema.ema_model.load_state_dict(checkpoint["ema_state_dict"])
-        ema.updates_count = checkpoint.get("ema_updates_count", 0)
+        exponential_moving_average.exponential_moving_average_model.load_state_dict(checkpoint["ema_state_dict"])
+        exponential_moving_average.updates_count = checkpoint.get("ema_updates_count", 0)
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
 
@@ -113,26 +100,14 @@ def main():
 
         print(f"[RESUME] Resumed from Epoch {start_epoch} (Best mIoU: {best_miou:.4f} | Learning Rate: {optimizer.param_groups[0]['lr']:.6f})")
     elif arguments.resume:
-        print("[WARN] Checkpoint not found. Starting from scratch.")
+        print("[WARN] Checkpoint not found. Starting from scratch...")
 
     print("[TRAIN] Beginning training process...")
     for epoch in range(start_epoch, arguments.epochs + 1):
-        print(f"\n--- Epoch [{epoch}/{arguments.epochs}] ---")
+        print(f"\n[TRAIN] --- Epoch [{epoch}/{arguments.epochs}] ---")
 
-        average_train_loss = train_one_epoch(
-            model,
-            train_loader,
-            criterion,
-            optimizer,
-            scaler,
-            device,
-            epoch=epoch,
-            max_epochs=arguments.epochs,
-            ema=ema,
-            scheduler=scheduler,
-        )
-
-        drivable_area_miou, lane_line_accuracy, lane_line_iou = evaluate(ema.ema_model, validation_loader, device, class_count=config.class_count, lane_line_class_id=config.loss.lane_line_class_id)
+        average_train_loss = train_one_epoch(model, train_loader, criterion, optimizer, scaler, device, epoch=epoch, max_epochs=arguments.epochs, exponential_moving_average=exponential_moving_average, scheduler=scheduler)
+        drivable_area_miou, lane_line_accuracy, lane_line_iou = evaluate(exponential_moving_average.exponential_moving_average_model, validation_loader, device, class_count=config.class_count, lane_line_class_id=config.loss.lane_line_class_id)
         current_miou = (drivable_area_miou + lane_line_iou) / 2.0
 
         if current_miou > best_miou:
@@ -145,8 +120,8 @@ def main():
             checkpoint = {
                 "epoch": epoch,
                 "model_state_dict": model.state_dict(),
-                "ema_state_dict": ema.ema_model.state_dict(),
-                "ema_updates_count": ema.updates_count,
+                "ema_state_dict": exponential_moving_average.exponential_moving_average_model.state_dict(),
+                "ema_updates_count": exponential_moving_average.updates_count,
                 "optimizer_state_dict": optimizer.state_dict(),
                 "scheduler_state_dict": scheduler.state_dict(),
                 "miou": best_miou,
@@ -162,8 +137,8 @@ def main():
         last_checkpoint = {
             "epoch": epoch,
             "model_state_dict": model.state_dict(),
-            "ema_state_dict": ema.ema_model.state_dict(),
-            "ema_updates_count": ema.updates_count,
+            "ema_state_dict": exponential_moving_average.exponential_moving_average_model.state_dict(),
+            "ema_updates_count": exponential_moving_average.updates_count,
             "optimizer_state_dict": optimizer.state_dict(),
             "scheduler_state_dict": scheduler.state_dict(),
             "miou": best_miou,
@@ -175,14 +150,14 @@ def main():
         torch.save(last_checkpoint, last_save_path)
 
     print("\n" + "=" * 50)
-    print(f"{'TRAINING COMPLETED':^50}")
+    print(f"{'[TRAIN] Training Completed':^50}")
     print("-" * 50)
     print(f"Best mIoU              : {best_miou:10.4f}")
     print(f"Best Drivable Area mIoU: {best_drivable_area_miou*100:10.2f}%")
     print(f"Best Lane Line Accuracy: {best_lane_line_accuracy*100:10.2f}%")
     print(f"Best Lane Line IoU     : {best_lane_line_iou*100:10.2f}%")
     print("-" * 50)
-    flops, parameters = get_model_complexity(model, input_size=(1, 3, arguments.image_height, arguments.image_width), device=device)
+    flops, parameters = get_model_complexity(model, batch_size=1, channels=3, height=arguments.image_height, width=arguments.image_width, device=device)
     print(f"Complexity             : FLOPs: {flops} | Parameters: {parameters}")
     print("=" * 50 + "\n")
 

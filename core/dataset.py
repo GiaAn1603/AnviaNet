@@ -71,37 +71,37 @@ def augment_hsv(image, hue_gain=0.015, saturation_gain=0.7, value_gain=0.4):
     return augmented_image
 
 
-def random_crop(image, drivable_area_mask, lane_line_mask, crop_size=(540, 960)):
+def random_crop(image, drivable_area_mask, lane_line_mask, crop_height=540, crop_width=960):
     height, width = image.shape[:2]
-    crop_height, crop_width = crop_size
 
     if height > crop_height and width > crop_width:
-        top = random.randint(a=0, b=height - crop_height)
-        left = random.randint(a=0, b=width - crop_width)
+        crop_x = random.randint(a=0, b=height - crop_height)
+        crop_y = random.randint(a=0, b=width - crop_width)
 
-        image = image[top : top + crop_height, left : left + crop_width]
-        drivable_area_mask = drivable_area_mask[top : top + crop_height, left : left + crop_width]
-        lane_line_mask = lane_line_mask[top : top + crop_height, left : left + crop_width]
+        image = image[crop_x : crop_x + crop_height, crop_y : crop_y + crop_width]
+        drivable_area_mask = drivable_area_mask[crop_x : crop_x + crop_height, crop_y : crop_y + crop_width]
+        lane_line_mask = lane_line_mask[crop_x : crop_x + crop_height, crop_y : crop_y + crop_width]
 
     return image, drivable_area_mask, lane_line_mask
 
 
 class BDD100KDataset(Dataset):
-    def __init__(self, data_root_path, is_train, image_size, perspective_probability=0.5, hsv_probability=0.5, crop_probability=0.1, flip_probability=0.5, bilateral_probability=0.1, gaussian_probability=0.1):
+    def __init__(self, data_root_path, config, is_train):
         self.is_train = is_train
         self.dataset_split = "train" if is_train else "val"
         self.image_directory = os.path.join(data_root_path, "images", self.dataset_split)
         self.drivable_area_directory = os.path.join(data_root_path, "segments", self.dataset_split)
         self.lane_line_directory = os.path.join(data_root_path, "lane", self.dataset_split)
         self.image_names = [name for name in os.listdir(self.image_directory) if name.endswith(".jpg")]
-        self.target_height, self.target_width = image_size
+        self.target_height = config.image_height
+        self.target_width = config.image_width
 
-        self.perspective_probability = perspective_probability
-        self.hsv_probability = hsv_probability
-        self.crop_probability = crop_probability
-        self.flip_probability = flip_probability
-        self.bilateral_probability = bilateral_probability
-        self.gaussian_probability = gaussian_probability
+        self.perspective_probability = config.augmentation.perspective_probability
+        self.hsv_probability = config.augmentation.hsv_probability
+        self.crop_probability = config.augmentation.crop_probability
+        self.flip_probability = config.augmentation.flip_probability
+        self.bilateral_probability = config.augmentation.bilateral_probability
+        self.gaussian_probability = config.augmentation.gaussian_probability
 
     def __len__(self):
         return len(self.image_names)

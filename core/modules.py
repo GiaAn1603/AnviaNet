@@ -21,7 +21,7 @@ class ConvBatchNormPReLU(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size):
         super().__init__()
         padding = (kernel_size - 1) // 2
-        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size, padding=padding, bias=False)
+        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=kernel_size, padding=padding, bias=False)
         self.batch_norm = nn.BatchNorm2d(out_channels)
         self.activation = nn.PReLU(out_channels)
 
@@ -36,7 +36,7 @@ class ConvBatchNormPReLU(nn.Module):
 class GraphConvolutionNetwork(nn.Module):
     def __init__(self, node_count, channel_count):
         super().__init__()
-        self.node_interaction = nn.Conv2d(node_count, node_count, 1, bias=False)
+        self.node_interaction = nn.Conv2d(node_count, node_count, kernel_size=1, bias=False)
         self.activation = nn.PReLU(node_count)
         self.channel_interaction = nn.Linear(channel_count, channel_count, bias=False)
 
@@ -56,10 +56,10 @@ class StripPooling(nn.Module):
         self.vertical_pool = nn.AdaptiveAvgPool2d((None, 1))
 
         intermediate_channels = in_channels // 2 if in_channels >= 16 else in_channels
-        self.horizontal_conv = nn.Sequential(nn.Conv2d(in_channels, intermediate_channels, 1, bias=False), nn.BatchNorm2d(intermediate_channels), nn.PReLU(intermediate_channels))
-        self.vertical_conv = nn.Sequential(nn.Conv2d(in_channels, intermediate_channels, 1, bias=False), nn.BatchNorm2d(intermediate_channels), nn.PReLU(intermediate_channels))
+        self.horizontal_conv = nn.Sequential(nn.Conv2d(in_channels, intermediate_channels, kernel_size=1, bias=False), nn.BatchNorm2d(intermediate_channels), nn.PReLU(intermediate_channels))
+        self.vertical_conv = nn.Sequential(nn.Conv2d(in_channels, intermediate_channels, kernel_size=1, bias=False), nn.BatchNorm2d(intermediate_channels), nn.PReLU(intermediate_channels))
 
-        self.output_conv = nn.Sequential(nn.Conv2d(intermediate_channels, in_channels, 1, bias=False), nn.BatchNorm2d(in_channels))
+        self.output_conv = nn.Sequential(nn.Conv2d(intermediate_channels, in_channels, kernel_size=1, bias=False), nn.BatchNorm2d(in_channels))
         self.sigmoid = nn.Sigmoid()
 
     def forward(self, input_tensor):
@@ -81,7 +81,7 @@ class SpatialAttention(nn.Module):
     def __init__(self, kernel_size):
         super().__init__()
         padding = kernel_size // 2
-        self.conv = nn.Conv2d(2, 1, kernel_size, padding=padding, bias=False)
+        self.conv = nn.Conv2d(2, 1, kernel_size=kernel_size, padding=padding, bias=False)
         self.sigmoid = nn.Sigmoid()
 
     def forward(self, input_tensor):
@@ -100,11 +100,11 @@ class StageFusionModule(nn.Module):
     def __init__(self, fine_channels, coarse_channels, out_channels):
         super().__init__()
 
-        self.fine_projection = ConvBatchNormPReLU(fine_channels, out_channels, 1)
-        self.coarse_projection = ConvBatchNormPReLU(coarse_channels, out_channels, 1)
+        self.fine_projection = ConvBatchNormPReLU(fine_channels, out_channels, kernel_size=1)
+        self.coarse_projection = ConvBatchNormPReLU(coarse_channels, out_channels, kernel_size=1)
 
         fused_channels = out_channels * 2
-        self.fusion_conv = ConvBatchNormPReLU(fused_channels, out_channels, 1)
+        self.fusion_conv = ConvBatchNormPReLU(fused_channels, out_channels, kernel_size=1)
 
     def forward(self, fine_features, coarse_features):
         _, _, height, width = fine_features.size()
@@ -127,19 +127,19 @@ class EfficientPyramidModule(nn.Module):
         self.split_groups = split_groups
         self.group_channels = out_channels // split_groups
 
-        self.compression_conv = nn.Sequential(nn.Conv2d(in_channels, out_channels, 1, bias=False), nn.BatchNorm2d(out_channels), nn.PReLU(out_channels))
+        self.compression_conv = nn.Sequential(nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False), nn.BatchNorm2d(out_channels), nn.PReLU(out_channels))
         self.pyramid_convs = nn.ModuleList()
 
         for dilation in dilations:
             self.pyramid_convs.append(
                 nn.Sequential(
-                    nn.Conv2d(self.group_channels, self.group_channels, 3, stride=1, padding=dilation, dilation=dilation, groups=self.group_channels, bias=False),
+                    nn.Conv2d(self.group_channels, self.group_channels, kernel_size=3, stride=1, padding=dilation, dilation=dilation, groups=self.group_channels, bias=False),
                     nn.BatchNorm2d(self.group_channels),
                     nn.PReLU(self.group_channels),
                 ),
             )
 
-        self.fusion_conv = nn.Sequential(nn.Conv2d(out_channels, out_channels, 1, bias=False), nn.BatchNorm2d(out_channels), nn.PReLU(out_channels))
+        self.fusion_conv = nn.Sequential(nn.Conv2d(out_channels, out_channels, kernel_size=1, bias=False), nn.BatchNorm2d(out_channels), nn.PReLU(out_channels))
 
     def forward(self, input_tensor):
         compressed_tensor = self.compression_conv(input_tensor)
@@ -197,9 +197,9 @@ class EfficientMultiScaleAttention(nn.Module):
         self.horizontal_pool = nn.AdaptiveAvgPool2d((None, 1))
         self.vertical_pool = nn.AdaptiveAvgPool2d((1, None))
 
-        self.group_norm = nn.GroupNorm(group_channels, group_channels)
-        self.interaction_conv = nn.Conv2d(group_channels, group_channels, 1)
-        self.spatial_conv = nn.Conv2d(group_channels, group_channels, 3, stride=1, padding=1)
+        self.group_norm = nn.GroupNorm(num_groups=group_channels, num_channels=group_channels)
+        self.interaction_conv = nn.Conv2d(group_channels, group_channels, kernel_size=1)
+        self.spatial_conv = nn.Conv2d(group_channels, group_channels, kernel_size=3, stride=1, padding=1)
 
         self.softmax = nn.Softmax(dim=-1)
 
@@ -237,17 +237,17 @@ class EfficientMultiScaleAttention(nn.Module):
 
 
 class FullScaleAttentionModule(nn.Module):
-    def __init__(self, in_channels, out_channels, sge_groups, ema_split_factor):
+    def __init__(self, in_channels, out_channels, spatial_enhance_groups, multi_scale_attention_split_factor):
         super().__init__()
 
         self.action_channels = max(8, math.ceil(in_channels / 4 / 8) * 8)
         self.idle_channels = in_channels - self.action_channels
 
-        self.partial_conv = nn.Conv2d(self.action_channels, self.action_channels, 3, padding=1, groups=self.action_channels)
-        self.spatial_group_enhance = SpatialGroupEnhance(groups=sge_groups)
+        self.partial_conv = nn.Conv2d(self.action_channels, self.action_channels, kernel_size=3, padding=1, groups=self.action_channels)
+        self.spatial_group_enhance = SpatialGroupEnhance(groups=spatial_enhance_groups)
 
-        self.mixed_conv = nn.Conv2d(in_channels, out_channels, 1, groups=4, bias=False)
-        self.efficient_multi_scale_attention = EfficientMultiScaleAttention(out_channels, split_factor=ema_split_factor)
+        self.mixed_conv = nn.Conv2d(in_channels, out_channels, kernel_size=1, groups=4, bias=False)
+        self.efficient_multi_scale_attention = EfficientMultiScaleAttention(out_channels, split_factor=multi_scale_attention_split_factor)
 
         self.batch_norm = nn.BatchNorm2d(out_channels)
         self.activation = nn.Hardswish(inplace=True)
@@ -272,7 +272,7 @@ class FullScaleAttentionModule(nn.Module):
 class UpSimpleBlock(nn.Module):
     def __init__(self, in_channels, out_channels):
         super().__init__()
-        self.transposed_conv = nn.ConvTranspose2d(in_channels, out_channels, 2, stride=2, bias=False)
+        self.transposed_conv = nn.ConvTranspose2d(in_channels, out_channels, kernel_size=2, stride=2, bias=False)
         self.batch_norm = nn.BatchNorm2d(out_channels, eps=1e-03)
         self.activation = nn.PReLU(out_channels)
 
@@ -293,9 +293,9 @@ class UpConvBlock(nn.Module):
 
         if not is_last_layer:
             fusion_in_channels = out_channels + skip_connection_channels
-            self.fusion_layer = ConvBatchNormPReLU(fusion_in_channels, out_channels, 3)
+            self.fusion_layer = ConvBatchNormPReLU(fusion_in_channels, out_channels, kernel_size=3)
 
-        self.output_layer = ConvBatchNormPReLU(out_channels, out_channels, 3)
+        self.output_layer = ConvBatchNormPReLU(out_channels, out_channels, kernel_size=3)
 
     def forward(self, input_tensor, skip_features=None):
         upsampled_features = self.upsample_layer(input_tensor)
@@ -314,14 +314,14 @@ class DualBranchUpsamplingBlock(nn.Module):
         super().__init__()
 
         self.is_last_layer = is_last_layer
-        self.fine_branch = nn.Sequential(nn.ConvTranspose2d(in_channels, out_channels, 2, stride=2, bias=False), nn.BatchNorm2d(out_channels, eps=1e-03), nn.PReLU(out_channels))
-        self.coarse_branch = nn.Sequential(nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False), nn.Conv2d(in_channels, out_channels, 1, bias=False), nn.BatchNorm2d(out_channels, eps=1e-03), nn.PReLU(out_channels))
+        self.fine_branch = nn.Sequential(nn.ConvTranspose2d(in_channels, out_channels, kernel_size=2, stride=2, bias=False), nn.BatchNorm2d(out_channels, eps=1e-03), nn.PReLU(out_channels))
+        self.coarse_branch = nn.Sequential(nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False), nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False), nn.BatchNorm2d(out_channels, eps=1e-03), nn.PReLU(out_channels))
 
         if not is_last_layer:
             fusion_in_channels = out_channels + skip_connection_channels
-            self.fusion_layer = ConvBatchNormPReLU(fusion_in_channels, out_channels, 3)
+            self.fusion_layer = ConvBatchNormPReLU(fusion_in_channels, out_channels, kernel_size=3)
 
-        self.output_layer = ConvBatchNormPReLU(out_channels, out_channels, 3)
+        self.output_layer = ConvBatchNormPReLU(out_channels, out_channels, kernel_size=3)
 
     def forward(self, input_tensor, skip_features=None):
         upsampled_features = self.fine_branch(input_tensor) + self.coarse_branch(input_tensor)

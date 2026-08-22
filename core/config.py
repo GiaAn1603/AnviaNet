@@ -1,5 +1,4 @@
 from dataclasses import dataclass, field
-from typing import Tuple
 
 
 @dataclass
@@ -34,6 +33,22 @@ class LossConfig:
 
 
 @dataclass
+class OptimizationConfig:
+    momentum: float = 0.9
+    epsilon: float = 1e-8
+
+
+@dataclass
+class AugmentationConfig:
+    perspective_probability: float = 0.5
+    hsv_probability: float = 0.5
+    crop_probability: float = 0.1
+    flip_probability: float = 0.5
+    bilateral_probability: float = 0.1
+    gaussian_probability: float = 0.1
+
+
+@dataclass
 class AnviaNetConfig:
     image_height: int = 360
     image_width: int = 640
@@ -52,7 +67,8 @@ class AnviaNetConfig:
 
     caam_in_channels: int = 128
     caam_activation_channels: int = 32
-    caam_bin_size: Tuple[int, int] = (3, 4)
+    caam_bin_height: int = 3
+    caam_bin_width: int = 4
 
     bottleneck_in_channels: int = 128
     bottleneck_out_channels: int = 384
@@ -62,6 +78,8 @@ class AnviaNetConfig:
     lane_line_decoder: TaskDecoderConfig = field(default_factory=lambda: TaskDecoderConfig(in_channels=320, stage1_channels=24, stage2_channels=8, skip_channels=24, attention_kernel_size=7))
 
     loss: LossConfig = field(default_factory=LossConfig)
+    optimization: OptimizationConfig = field(default_factory=OptimizationConfig)
+    augmentation: AugmentationConfig = field(default_factory=AugmentationConfig)
 
     def __post_init__(self):
         if self.encoder_epm_split_groups != len(self.encoder_epm_dilations):
@@ -71,8 +89,8 @@ class AnviaNetConfig:
         feature_height = self.image_height // downsample_factor
         feature_width = self.image_width // downsample_factor
 
-        if feature_height % self.caam_bin_size[0] != 0:
-            raise ValueError(f"Feature map height ({feature_height}) % CAAM bin height ({self.caam_bin_size[0]}) != 0. Adjust image_height or caam_bin_size.")
+        if feature_height % self.caam_bin_height != 0:
+            raise ValueError(f"Feature map height ({feature_height}) % CAAM bin height ({self.caam_bin_height}) != 0. Adjust image_height or caam_bin_height.")
 
-        if feature_width % self.caam_bin_size[1] != 0:
-            raise ValueError(f"Feature map width ({feature_width}) % CAAM bin width ({self.caam_bin_size[1]}) != 0. Adjust image_width or caam_bin_size.")
+        if feature_width % self.caam_bin_width != 0:
+            raise ValueError(f"Feature map width ({feature_width}) % CAAM bin width ({self.caam_bin_width}) != 0. Adjust image_width or caam_bin_width.")

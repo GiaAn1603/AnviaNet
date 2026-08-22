@@ -8,14 +8,14 @@ from tqdm import tqdm
 from utils.metrics import AverageMeter, SegmentationMetric
 
 
-class EMAModel:
+class ExponentialMovingAverageModel:
     def __init__(self, model, initial_decay, initial_updates):
-        self.ema_model = deepcopy(model).eval()
+        self.exponential_moving_average_model = deepcopy(model).eval()
         self.base_decay = initial_decay
         self.updates_count = initial_updates
 
-        for parameter in self.ema_model.parameters():
-            parameter.requires_grad_(False)
+        for parameter in self.exponential_moving_average_model.parameters():
+            parameter.requires_grad_(requires_grad=False)
 
     def _calculate_decay(self, current_updates):
         decay_ramp = 1.0 - math.exp(-current_updates / 2000.0)
@@ -29,7 +29,7 @@ class EMAModel:
         current_decay = self._calculate_decay(self.updates_count)
         active_state_dict = active_model.state_dict()
 
-        for name, value in self.ema_model.state_dict().items():
+        for name, value in self.exponential_moving_average_model.state_dict().items():
             if value.dtype.is_floating_point:
                 value *= current_decay
 
@@ -52,7 +52,7 @@ class PolynomialDecayScheduler(LambdaLR):
         return decay_factor
 
 
-def train_one_epoch(model, dataloader, criterion, optimizer, scaler, device, epoch, max_epochs, ema=None, scheduler=None):
+def train_one_epoch(model, dataloader, criterion, optimizer, scaler, device, epoch, max_epochs, exponential_moving_average=None, scheduler=None):
     model.train()
     loss_meter = AverageMeter()
     progress_bar = tqdm(dataloader, total=len(dataloader), bar_format="{l_bar}{bar:10}{r_bar}")
@@ -73,10 +73,10 @@ def train_one_epoch(model, dataloader, criterion, optimizer, scaler, device, epo
         scaler.step(optimizer)
         scaler.update()
 
-        if ema is not None:
-            ema.update(model)
+        if exponential_moving_average is not None:
+            exponential_moving_average.update(model)
 
-        loss_meter.update(loss.item(), images.size(dim=0))
+        loss_meter.update(value=loss.item(), batch_size=images.size(dim=0))
         progress_bar.set_description(f"Epoch [{epoch}/{max_epochs}] | Total Loss: {loss_meter.average:.4f} | Learning Rate: {optimizer.param_groups[0]['lr']:.6f}")
 
     if scheduler:

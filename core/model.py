@@ -21,7 +21,7 @@ class ShuffleNetEncoder(nn.Module):
         super().__init__()
 
         backbone = shufflenet_v2_x1_0(weights=ShuffleNet_V2_X1_0_Weights.DEFAULT)
-        self.stem_conv = nn.Sequential(nn.Conv2d(5, 24, 3, stride=2, padding=1, bias=False), nn.BatchNorm2d(24), nn.ReLU(inplace=True))
+        self.stem_conv = nn.Sequential(nn.Conv2d(5, 24, kernel_size=3, stride=2, padding=1, bias=False), nn.BatchNorm2d(24), nn.ReLU(inplace=True))
         self._initialize_weights(backbone)
 
         self.maxpool = backbone.maxpool
@@ -30,10 +30,10 @@ class ShuffleNetEncoder(nn.Module):
 
         self.stage_fusion_module = StageFusionModule(config.encoder_stage2_channels, config.encoder_stage3_channels, config.encoder_out_channels)
         self.efficient_pyramid_module = EfficientPyramidModule(config.encoder_out_channels, config.encoder_out_channels, split_groups=config.encoder_epm_split_groups, dilations=config.encoder_epm_dilations)
-        self.full_scale_attention_module = FullScaleAttentionModule(config.encoder_out_channels, config.encoder_out_channels, sge_groups=config.encoder_fsa_sge_groups, ema_split_factor=config.encoder_fsa_ema_split_factor)
+        self.full_scale_attention_module = FullScaleAttentionModule(config.encoder_out_channels, config.encoder_out_channels, spatial_enhance_groups=config.encoder_fsa_sge_groups, multi_scale_attention_split_factor=config.encoder_fsa_ema_split_factor)
 
-        self.half_skip_compressor = nn.Sequential(nn.Conv2d(24, config.encoder_half_skip_channels, 1, bias=False), nn.BatchNorm2d(config.encoder_half_skip_channels), nn.PReLU(config.encoder_half_skip_channels))
-        self.quarter_skip_compressor = nn.Sequential(nn.Conv2d(24, config.encoder_quarter_skip_channels, 1, bias=False), nn.BatchNorm2d(config.encoder_quarter_skip_channels), nn.PReLU(config.encoder_quarter_skip_channels))
+        self.half_skip_compressor = nn.Sequential(nn.Conv2d(24, config.encoder_half_skip_channels, kernel_size=1, bias=False), nn.BatchNorm2d(config.encoder_half_skip_channels), nn.PReLU(config.encoder_half_skip_channels))
+        self.quarter_skip_compressor = nn.Sequential(nn.Conv2d(24, config.encoder_quarter_skip_channels, kernel_size=1, bias=False), nn.BatchNorm2d(config.encoder_quarter_skip_channels), nn.PReLU(config.encoder_quarter_skip_channels))
 
     @torch.no_grad()
     def _initialize_weights(self, backbone):
@@ -81,44 +81,43 @@ class ContextAwareAttentionModule(nn.Module):
     def __init__(self, config):
         super().__init__()
 
-        self.bin_size = config.caam_bin_size
-        self.class_activation_conv = nn.Conv2d(config.caam_in_channels, config.caam_activation_channels, 1)
-        self.class_activation_pool = nn.AdaptiveAvgPool2d(config.caam_bin_size)
+        self.bin_height = config.caam_bin_height
+        self.bin_width = config.caam_bin_width
+
+        self.class_activation_conv = nn.Conv2d(config.caam_in_channels, config.caam_activation_channels, kernel_size=1)
+        self.class_activation_pool = nn.AdaptiveAvgPool2d((config.caam_bin_height, config.caam_bin_width))
         self.sigmoid = nn.Sigmoid()
 
-        bins_height, bins_width = config.caam_bin_size
-        total_bins = bins_height * bins_width
+        total_bins = self.bin_height * self.bin_width
         self.graph_convolution_network = GraphConvolutionNetwork(total_bins, config.caam_in_channels)
-        self.local_to_global_conv = nn.Conv2d(total_bins, 1, 1)
+        self.local_to_global_conv = nn.Conv2d(total_bins, 1, kernel_size=1)
         self.activation = nn.PReLU(1)
 
         inner_channels = config.caam_in_channels // 4
         self.projection_query = nn.Linear(config.caam_in_channels, inner_channels)
         self.projection_key = nn.Linear(config.caam_in_channels, inner_channels)
         self.projection_value = nn.Linear(config.caam_in_channels, inner_channels)
-        self.output_projection = nn.Sequential(nn.Conv2d(inner_channels, config.caam_in_channels, 1, bias=False), nn.BatchNorm2d(config.caam_in_channels), nn.PReLU(config.caam_in_channels))
+        self.output_projection = nn.Sequential(nn.Conv2d(inner_channels, config.caam_in_channels, kernel_size=1, bias=False), nn.BatchNorm2d(config.caam_in_channels), nn.PReLU(config.caam_in_channels))
 
-    def _patch_split(self, feature_map, bin_size):
+    def _patch_split(self, feature_map, bin_height, bin_width):
         batch_size, channels, height, width = feature_map.size()
-        bins_height, bins_width = bin_size
 
-        patch_height = height // bins_height
-        patch_width = width // bins_width
+        patch_height = height // bin_height
+        patch_width = width // bin_width
 
-        patched_tensor = feature_map.view(batch_size, channels, bins_height, patch_height, bins_width, patch_width)
+        patched_tensor = feature_map.view(batch_size, channels, bin_height, patch_height, bin_width, patch_width)
         patched_tensor = patched_tensor.permute(0, 2, 4, 3, 5, 1).contiguous()
         patched_tensor = patched_tensor.view(batch_size, -1, patch_height, patch_width, channels)
 
         return patched_tensor
 
-    def _patch_recover(self, patched_tensor, bin_size):
+    def _patch_recover(self, patched_tensor, bin_height, bin_width):
         batch_size, _, patch_height, patch_width, channels = patched_tensor.size()
-        bins_height, bins_width = bin_size
 
-        height = patch_height * bins_height
-        width = patch_width * bins_width
+        height = patch_height * bin_height
+        width = patch_width * bin_width
 
-        feature_map = patched_tensor.view(batch_size, bins_height, bins_width, patch_height, patch_width, channels)
+        feature_map = patched_tensor.view(batch_size, bin_height, bin_width, patch_height, patch_width, channels)
         feature_map = feature_map.permute(0, 5, 1, 3, 2, 4).contiguous()
         feature_map = feature_map.view(batch_size, channels, height, width)
 
@@ -130,8 +129,8 @@ class ContextAwareAttentionModule(nn.Module):
         activation_map = self.class_activation_conv(input_tensor)
         class_score = self.sigmoid(self.class_activation_pool(activation_map))
 
-        patched_class_activation_map = self._patch_split(activation_map, self.bin_size)
-        patched_features = self._patch_split(input_tensor, self.bin_size)
+        patched_class_activation_map = self._patch_split(activation_map, bin_height=self.bin_height, bin_width=self.bin_width)
+        patched_features = self._patch_split(input_tensor, bin_height=self.bin_height, bin_width=self.bin_width)
 
         batch_size = patched_class_activation_map.shape[0]
         patch_height, patch_width = patched_class_activation_map.shape[2], patched_class_activation_map.shape[3]
@@ -160,7 +159,7 @@ class ContextAwareAttentionModule(nn.Module):
 
         output_tensor = torch.matmul(affinity_matrix, value)
         output_tensor = output_tensor.view(batch_size, -1, patch_height, patch_width, value.shape[-1])
-        output_tensor = self._patch_recover(output_tensor, self.bin_size)
+        output_tensor = self._patch_recover(output_tensor, bin_height=self.bin_height, bin_width=self.bin_width)
 
         projected_tensor = self.output_projection(output_tensor)
         output_tensor = residual + projected_tensor
@@ -194,22 +193,22 @@ class AnviaNet(nn.Module):
 
         self.shufflenet_encoder = ShuffleNetEncoder(config)
         self.context_aware_attention_module = ContextAwareAttentionModule(config)
-        self.bottleneck = ConvBatchNormPReLU(config.bottleneck_in_channels, config.bottleneck_out_channels, config.bottleneck_kernel_size)
+        self.bottleneck = ConvBatchNormPReLU(config.bottleneck_in_channels, config.bottleneck_out_channels, kernel_size=config.bottleneck_kernel_size)
         self.drivable_area_decoder = TaskDecoder(config, config.drivable_area_decoder, use_dual_branch_upsampling=False)
         self.lane_line_decoder = TaskDecoder(config, config.lane_line_decoder, use_dual_branch_upsampling=True)
 
         auxiliary_channels = config.encoder_out_channels // 2
         self.drivable_area_auxiliary_head = nn.Sequential(
-            nn.Conv2d(config.encoder_out_channels, auxiliary_channels, 3, padding=1, bias=False),
+            nn.Conv2d(config.encoder_out_channels, auxiliary_channels, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm2d(auxiliary_channels),
             nn.PReLU(auxiliary_channels),
-            nn.Conv2d(auxiliary_channels, config.class_count, 1),
+            nn.Conv2d(auxiliary_channels, config.class_count, kernel_size=1),
         )
         self.lane_line_auxiliary_head = nn.Sequential(
-            nn.Conv2d(config.encoder_out_channels, auxiliary_channels, 3, padding=1, bias=False),
+            nn.Conv2d(config.encoder_out_channels, auxiliary_channels, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm2d(auxiliary_channels),
             nn.PReLU(auxiliary_channels),
-            nn.Conv2d(auxiliary_channels, config.class_count, 1),
+            nn.Conv2d(auxiliary_channels, config.class_count, kernel_size=1),
         )
 
     def forward(self, images):
